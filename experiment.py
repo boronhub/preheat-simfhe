@@ -218,13 +218,13 @@ def fft_best_params():
 if __name__ == "__main__":
     scheme_params = params.BEST_PARAMS
     micro_args = [scheme_params.mod_raise_ctxt, scheme_params]
-    # targets = [
-    #     Target("micro_benchmarks.mod_up", 3, micro_args),
-    #     Target("micro_benchmarks.mod_down", 3, micro_args),
-    #     Target("micro_benchmarks.rotate", 4, micro_args),
-    # ]
-    # headers, data = run_mutiple(targets)
-    # print_table(headers, data)
+    targets = [
+        Target("micro_benchmarks.mod_up", 3, micro_args),
+        Target("micro_benchmarks.mod_down", 3, micro_args),
+        Target("micro_benchmarks.rotate", 4, micro_args),
+    ]
+    headers, data = run_mutiple(targets, gen_graph=True)
+    print_table(headers, data)
 
     # for scheme_params in [params.GPU_PARAMS, params.BEST_PARAMS]:
     #     print(scheme_params)
@@ -263,39 +263,39 @@ if __name__ == "__main__":
         # ]:
         # for scheme_params in [params.BEST_PARAMS]:
         print(scheme_params)
-        targets.append(
-            # Target(
-            #    "logistic_regression.inner_product",
-            #    1,
-            #    [scheme_params.fresh_ctxt, scheme_params.arch_param, 256],
-            # )
-            # ,
-            # Target(
-            #     "logistic_regression.sigmoid_product",
-            #     1,
-            #     [scheme_params.fresh_ctxt, scheme_params.arch_param],
-            # ),
-            # Target(
-            #     "logistic_regression.iteration",
-            #     1,
-            #     [scheme_params.fresh_ctxt, scheme_params.arch_param, 256],
-            # ),
-            # Target(
-            #     "bootstrap.bootstrap",
-            #     1,
-            #     [scheme_params],
-            # ),
-            # Target(
-            #     "logistic_regression.logistic_regression",
-            #     2,
-            #     [scheme_params.fresh_ctxt, scheme_params.arch_param],
-            # ),
-            Target(
-                "logistic_regression.bootstrap_regression",
-                1,
-                [scheme_params],
-            ),
-        )
+        #targets.append(
+        #    # Target(
+        #    #    "logistic_regression.inner_product",
+        #    #    1,
+        #    #    [scheme_params.fresh_ctxt, scheme_params.arch_param, 256],
+        #    # )
+        #    # ,
+        #    # Target(
+        #    #     "logistic_regression.sigmoid_product",
+        #    #     1,
+        #    #     [scheme_params.fresh_ctxt, scheme_params.arch_param],
+        #    # ),
+        #    # Target(
+        #    #     "logistic_regression.iteration",
+        #    #     1,
+        #    #     [scheme_params.fresh_ctxt, scheme_params.arch_param, 256],
+        #    # ),
+        #    # Target(
+        #    #     "bootstrap.bootstrap",
+        #    #     1,
+        #    #     [scheme_params],
+        #    # ),
+        #    # Target(
+        #    #     "logistic_regression.logistic_regression",
+        #    #     2,
+        #    #     [scheme_params.fresh_ctxt, scheme_params.arch_param],
+        #    # ),
+        #    #Target(
+        #    #    "logistic_regression.bootstrap_regression",
+        #    #    1,
+        #    #    [scheme_params],
+        #    #),
+        #)
     headers, data = run_mutiple(targets, gen_graph=True)
     print_table(headers, data)
     print()
