@@ -16,10 +16,10 @@ RPT_ATTR = {
     "dram limb rd": "arch.dram_limb_rd",
     "dram limb wr": "arch.dram_limb_wr",
     "dram key rd": "arch.dram_auto_rd",
-    # "total cycles (slow, worst case)": "arch.total_cycle_sm_wc",
-    # "total cycles (slow, best case)": "arch.total_cycle_sm_bc",
-    # "total cycles (fast, worst case)": "arch.total_cycle_fm_wc",
-    # "total cycles (fast, best case)": "arch.total_cycle_fm_bc"
+    "total cycles (slow, worst case)": "arch.total_cycle_sm_wc",
+    "total cycles (slow, best case)": "arch.total_cycle_sm_bc",
+    "total cycles (fast, worst case)": "arch.total_cycle_fm_wc",
+    "total cycles (fast, best case)": "arch.total_cycle_fm_bc",
 }
 
 
@@ -74,11 +74,14 @@ def run_single(target, attr_dict=RPT_ATTR):
     return (headers, data)
 
 
-def run_mutiple(targets, attr_dict=RPT_ATTR):
+def run_mutiple(targets, attr_dict=RPT_ATTR, gen_graph=False):
     cum_data = []
     headers = get_headers(attr_dict)
     for target in targets:
         experiment = generate_profile(target)
+        if gen_graph:
+            for attr in attr_dict.values():
+                generate_flamegraph(experiment, attr)
         acc_data = post_process.accumulate(experiment.data)
         data = get_table(acc_data, attr_dict, target.depth)
         cum_data += data
@@ -213,8 +216,8 @@ def fft_best_params():
 
 
 if __name__ == "__main__":
-    # scheme_params = params.BEST_PARAMS
-    # micro_args = [scheme_params.mod_raise_ctxt, scheme_params]
+    scheme_params = params.BEST_PARAMS
+    micro_args = [scheme_params.mod_raise_ctxt, scheme_params]
     # targets = [
     #     Target("micro_benchmarks.mod_up", 3, micro_args),
     #     Target("micro_benchmarks.mod_down", 3, micro_args),
@@ -245,54 +248,55 @@ if __name__ == "__main__":
     # for scheme_params in [params.GPU_PARAMS, params.LATTIGO_PARAMS, params.BEST_PARAMS]:
     # for scheme_params in [params.LATTIGO_PARAMS]:
     # for scheme_params in [params.BEST_PARAMS, params.HUGE_PARAMS]:
-    # for scheme_params in [
-    #     params.GPU_PARAMS,
-    #     params.Mem_benchmark_O_1_cache,
-    #     params.Mem_benchmark_beta_cache,
-    #     params.Mem_benchmark_alpha_cache,
-    #     params.Mem_benchmark_reorder,
-    # ]:
     for scheme_params in [
-        params.Alg_benchmark_baseline,
-        params.Alg_benchmark_mod_down_merge,
-        params.Alg_benchmark_mod_down_hoist,
-        params.BEST_PARAMS,
+        params.GPU_PARAMS,
+        params.Mem_benchmark_O_1_cache,
+        params.Mem_benchmark_beta_cache,
+        params.Mem_benchmark_alpha_cache,
+        params.Mem_benchmark_reorder,
     ]:
+        # for scheme_params in [
+        #    params.Alg_benchmark_baseline,
+        #    params.Alg_benchmark_mod_down_merge,
+        #    params.Alg_benchmark_mod_down_hoist,
+        #    params.BEST_PARAMS,
+        # ]:
         # for scheme_params in [params.BEST_PARAMS]:
         print(scheme_params)
         targets.append(
-            #         Target(
-            #             "logistic_regression.inner_product",
-            #             1,
-            #             [scheme_params.fresh_ctxt, scheme_params.arch_param, 256],
-            #         ),
-            #         Target(
-            #             "logistic_regression.sigmoid_product",
-            #             1,
-            #             [scheme_params.fresh_ctxt, scheme_params.arch_param],
-            #         ),
-            #         Target(
-            #             "logistic_regression.iteration",
-            #             1,
-            #             [scheme_params.fresh_ctxt, scheme_params.arch_param, 256],
-            #         ),
-            Target(
-                "bootstrap.bootstrap",
-                1,
-                [scheme_params],
-            ),
+            # Target(
+            #    "logistic_regression.inner_product",
+            #    1,
+            #    [scheme_params.fresh_ctxt, scheme_params.arch_param, 256],
+            # )
+            # ,
+            # Target(
+            #     "logistic_regression.sigmoid_product",
+            #     1,
+            #     [scheme_params.fresh_ctxt, scheme_params.arch_param],
+            # ),
+            # Target(
+            #     "logistic_regression.iteration",
+            #     1,
+            #     [scheme_params.fresh_ctxt, scheme_params.arch_param, 256],
+            # ),
+            # Target(
+            #     "bootstrap.bootstrap",
+            #     1,
+            #     [scheme_params],
+            # ),
             # Target(
             #     "logistic_regression.logistic_regression",
             #     2,
             #     [scheme_params.fresh_ctxt, scheme_params.arch_param],
             # ),
-            #         Target(
-            #             "logistic_regression.bootstrap_regression",
-            #             1,
-            #             [scheme_params],
-            #         ),
+            Target(
+                "logistic_regression.bootstrap_regression",
+                1,
+                [scheme_params],
+            ),
         )
-    headers, data = run_mutiple(targets)
+    headers, data = run_mutiple(targets, gen_graph=True)
     print_table(headers, data)
     print()
 

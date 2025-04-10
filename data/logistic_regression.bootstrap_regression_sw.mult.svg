@@ -1,0 +1,2502 @@
+<?xml version="1.0" standalone="no"?>
+<!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN" "http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd">
+<svg version="1.1" width="1200" height="262" onload="init(evt)" viewBox="0 0 1200 262" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink">
+<!-- Flame graph stack visualization. See https://github.com/brendangregg/FlameGraph for latest version, and http://www.brendangregg.com/flamegraphs.html for examples. -->
+<!-- NOTES:  -->
+<defs>
+	<linearGradient id="background" y1="0" y2="1" x1="0" x2="0" >
+		<stop stop-color="#eeeeee" offset="5%" />
+		<stop stop-color="#eeeeb0" offset="95%" />
+	</linearGradient>
+</defs>
+<style type="text/css">
+	text { font-family:Verdana; font-size:12px; fill:rgb(0,0,0); }
+	#search, #ignorecase { opacity:0.1; cursor:pointer; }
+	#search:hover, #search.show, #ignorecase:hover, #ignorecase.show { opacity:1; }
+	#subtitle { text-anchor:middle; font-color:rgb(160,160,160); }
+	#title { text-anchor:middle; font-size:17px}
+	#unzoom { cursor:pointer; }
+	#frames > *:hover { stroke:black; stroke-width:0.5; cursor:pointer; }
+	.hide { display:none; }
+	.parent { opacity:0.5; }
+</style>
+<script type="text/ecmascript">
+<![CDATA[
+	"use strict";
+	var details, searchbtn, unzoombtn, matchedtxt, svg, searching, currentSearchTerm, ignorecase, ignorecaseBtn;
+	function init(evt) {
+		details = document.getElementById("details").firstChild;
+		searchbtn = document.getElementById("search");
+		ignorecaseBtn = document.getElementById("ignorecase");
+		unzoombtn = document.getElementById("unzoom");
+		matchedtxt = document.getElementById("matched");
+		svg = document.getElementsByTagName("svg")[0];
+		searching = 0;
+		currentSearchTerm = null;
+
+		// use GET parameters to restore a flamegraphs state.
+		var params = get_params();
+		if (params.x && params.y)
+			zoom(find_group(document.querySelector('[x="' + params.x + '"][y="' + params.y + '"]')));
+                if (params.s) search(params.s);
+	}
+
+	// event listeners
+	window.addEventListener("click", function(e) {
+		var target = find_group(e.target);
+		if (target) {
+			if (target.nodeName == "a") {
+				if (e.ctrlKey === false) return;
+				e.preventDefault();
+			}
+			if (target.classList.contains("parent")) unzoom(true);
+			zoom(target);
+			if (!document.querySelector('.parent')) {
+				// we have basically done a clearzoom so clear the url
+				var params = get_params();
+				if (params.x) delete params.x;
+				if (params.y) delete params.y;
+				history.replaceState(null, null, parse_params(params));
+				unzoombtn.classList.add("hide");
+				return;
+			}
+
+			// set parameters for zoom state
+			var el = target.querySelector("rect");
+			if (el && el.attributes && el.attributes.y && el.attributes._orig_x) {
+				var params = get_params()
+				params.x = el.attributes._orig_x.value;
+				params.y = el.attributes.y.value;
+				history.replaceState(null, null, parse_params(params));
+			}
+		}
+		else if (e.target.id == "unzoom") clearzoom();
+		else if (e.target.id == "search") search_prompt();
+		else if (e.target.id == "ignorecase") toggle_ignorecase();
+	}, false)
+
+	// mouse-over for info
+	// show
+	window.addEventListener("mouseover", function(e) {
+		var target = find_group(e.target);
+		if (target) details.nodeValue = "Function: " + g_to_text(target);
+	}, false)
+
+	// clear
+	window.addEventListener("mouseout", function(e) {
+		var target = find_group(e.target);
+		if (target) details.nodeValue = ' ';
+	}, false)
+
+	// ctrl-F for search
+	// ctrl-I to toggle case-sensitive search
+	window.addEventListener("keydown",function (e) {
+		if (e.keyCode === 114 || (e.ctrlKey && e.keyCode === 70)) {
+			e.preventDefault();
+			search_prompt();
+		}
+		else if (e.ctrlKey && e.keyCode === 73) {
+			e.preventDefault();
+			toggle_ignorecase();
+		}
+	}, false)
+
+	// functions
+	function get_params() {
+		var params = {};
+		var paramsarr = window.location.search.substr(1).split('&');
+		for (var i = 0; i < paramsarr.length; ++i) {
+			var tmp = paramsarr[i].split("=");
+			if (!tmp[0] || !tmp[1]) continue;
+			params[tmp[0]]  = decodeURIComponent(tmp[1]);
+		}
+		return params;
+	}
+	function parse_params(params) {
+		var uri = "?";
+		for (var key in params) {
+			uri += key + '=' + encodeURIComponent(params[key]) + '&';
+		}
+		if (uri.slice(-1) == "&")
+			uri = uri.substring(0, uri.length - 1);
+		if (uri == '?')
+			uri = window.location.href.split('?')[0];
+		return uri;
+	}
+	function find_child(node, selector) {
+		var children = node.querySelectorAll(selector);
+		if (children.length) return children[0];
+	}
+	function find_group(node) {
+		var parent = node.parentElement;
+		if (!parent) return;
+		if (parent.id == "frames") return node;
+		return find_group(parent);
+	}
+	function orig_save(e, attr, val) {
+		if (e.attributes["_orig_" + attr] != undefined) return;
+		if (e.attributes[attr] == undefined) return;
+		if (val == undefined) val = e.attributes[attr].value;
+		e.setAttribute("_orig_" + attr, val);
+	}
+	function orig_load(e, attr) {
+		if (e.attributes["_orig_"+attr] == undefined) return;
+		e.attributes[attr].value = e.attributes["_orig_" + attr].value;
+		e.removeAttribute("_orig_"+attr);
+	}
+	function g_to_text(e) {
+		var text = find_child(e, "title").firstChild.nodeValue;
+		return (text)
+	}
+	function g_to_func(e) {
+		var func = g_to_text(e);
+		// if there's any manipulation we want to do to the function
+		// name before it's searched, do it here before returning.
+		return (func);
+	}
+	function update_text(e) {
+		var r = find_child(e, "rect");
+		var t = find_child(e, "text");
+		var w = parseFloat(r.attributes.width.value) -3;
+		var txt = find_child(e, "title").textContent.replace(/\([^(]*\)$/,"");
+		t.attributes.x.value = parseFloat(r.attributes.x.value) + 3;
+
+		// Smaller than this size won't fit anything
+		if (w < 2 * 12 * 0.59) {
+			t.textContent = "";
+			return;
+		}
+
+		t.textContent = txt;
+		var sl = t.getSubStringLength(0, txt.length);
+		// check if only whitespace or if we can fit the entire string into width w
+		if (/^ *$/.test(txt) || sl < w)
+			return;
+
+		// this isn't perfect, but gives a good starting point
+		// and avoids calling getSubStringLength too often
+		var start = Math.floor((w/sl) * txt.length);
+		for (var x = start; x > 0; x = x-2) {
+			if (t.getSubStringLength(0, x + 2) <= w) {
+				t.textContent = txt.substring(0, x) + "..";
+				return;
+			}
+		}
+		t.textContent = "";
+	}
+
+	// zoom
+	function zoom_reset(e) {
+		if (e.attributes != undefined) {
+			orig_load(e, "x");
+			orig_load(e, "width");
+		}
+		if (e.childNodes == undefined) return;
+		for (var i = 0, c = e.childNodes; i < c.length; i++) {
+			zoom_reset(c[i]);
+		}
+	}
+	function zoom_child(e, x, ratio) {
+		if (e.attributes != undefined) {
+			if (e.attributes.x != undefined) {
+				orig_save(e, "x");
+				e.attributes.x.value = (parseFloat(e.attributes.x.value) - x - 10) * ratio + 10;
+				if (e.tagName == "text")
+					e.attributes.x.value = find_child(e.parentNode, "rect[x]").attributes.x.value + 3;
+			}
+			if (e.attributes.width != undefined) {
+				orig_save(e, "width");
+				e.attributes.width.value = parseFloat(e.attributes.width.value) * ratio;
+			}
+		}
+
+		if (e.childNodes == undefined) return;
+		for (var i = 0, c = e.childNodes; i < c.length; i++) {
+			zoom_child(c[i], x - 10, ratio);
+		}
+	}
+	function zoom_parent(e) {
+		if (e.attributes) {
+			if (e.attributes.x != undefined) {
+				orig_save(e, "x");
+				e.attributes.x.value = 10;
+			}
+			if (e.attributes.width != undefined) {
+				orig_save(e, "width");
+				e.attributes.width.value = parseInt(svg.width.baseVal.value) - (10 * 2);
+			}
+		}
+		if (e.childNodes == undefined) return;
+		for (var i = 0, c = e.childNodes; i < c.length; i++) {
+			zoom_parent(c[i]);
+		}
+	}
+	function zoom(node) {
+		var attr = find_child(node, "rect").attributes;
+		var width = parseFloat(attr.width.value);
+		var xmin = parseFloat(attr.x.value);
+		var xmax = parseFloat(xmin + width);
+		var ymin = parseFloat(attr.y.value);
+		var ratio = (svg.width.baseVal.value - 2 * 10) / width;
+
+		// XXX: Workaround for JavaScript float issues (fix me)
+		var fudge = 0.0001;
+
+		unzoombtn.classList.remove("hide");
+
+		var el = document.getElementById("frames").children;
+		for (var i = 0; i < el.length; i++) {
+			var e = el[i];
+			var a = find_child(e, "rect").attributes;
+			var ex = parseFloat(a.x.value);
+			var ew = parseFloat(a.width.value);
+			var upstack;
+			// Is it an ancestor
+			if (0 == 0) {
+				upstack = parseFloat(a.y.value) > ymin;
+			} else {
+				upstack = parseFloat(a.y.value) < ymin;
+			}
+			if (upstack) {
+				// Direct ancestor
+				if (ex <= xmin && (ex+ew+fudge) >= xmax) {
+					e.classList.add("parent");
+					zoom_parent(e);
+					update_text(e);
+				}
+				// not in current path
+				else
+					e.classList.add("hide");
+			}
+			// Children maybe
+			else {
+				// no common path
+				if (ex < xmin || ex + fudge >= xmax) {
+					e.classList.add("hide");
+				}
+				else {
+					zoom_child(e, xmin, ratio);
+					update_text(e);
+				}
+			}
+		}
+		search();
+	}
+	function unzoom(dont_update_text) {
+		unzoombtn.classList.add("hide");
+		var el = document.getElementById("frames").children;
+		for(var i = 0; i < el.length; i++) {
+			el[i].classList.remove("parent");
+			el[i].classList.remove("hide");
+			zoom_reset(el[i]);
+			if(!dont_update_text) update_text(el[i]);
+		}
+		search();
+	}
+	function clearzoom() {
+		unzoom();
+
+		// remove zoom state
+		var params = get_params();
+		if (params.x) delete params.x;
+		if (params.y) delete params.y;
+		history.replaceState(null, null, parse_params(params));
+	}
+
+	// search
+	function toggle_ignorecase() {
+		ignorecase = !ignorecase;
+		if (ignorecase) {
+			ignorecaseBtn.classList.add("show");
+		} else {
+			ignorecaseBtn.classList.remove("show");
+		}
+		reset_search();
+		search();
+	}
+	function reset_search() {
+		var el = document.querySelectorAll("#frames rect");
+		for (var i = 0; i < el.length; i++) {
+			orig_load(el[i], "fill")
+		}
+		var params = get_params();
+		delete params.s;
+		history.replaceState(null, null, parse_params(params));
+	}
+	function search_prompt() {
+		if (!searching) {
+			var term = prompt("Enter a search term (regexp " +
+			    "allowed, eg: ^ext4_)"
+			    + (ignorecase ? ", ignoring case" : "")
+			    + "\nPress Ctrl-i to toggle case sensitivity", "");
+			if (term != null) search(term);
+		} else {
+			reset_search();
+			searching = 0;
+			currentSearchTerm = null;
+			searchbtn.classList.remove("show");
+			searchbtn.firstChild.nodeValue = "Search"
+			matchedtxt.classList.add("hide");
+			matchedtxt.firstChild.nodeValue = ""
+		}
+	}
+	function search(term) {
+		if (term) currentSearchTerm = term;
+		if (currentSearchTerm === null) return;
+
+		var re = new RegExp(currentSearchTerm, ignorecase ? 'i' : '');
+		var el = document.getElementById("frames").children;
+		var matches = new Object();
+		var maxwidth = 0;
+		for (var i = 0; i < el.length; i++) {
+			var e = el[i];
+			var func = g_to_func(e);
+			var rect = find_child(e, "rect");
+			if (func == null || rect == null)
+				continue;
+
+			// Save max width. Only works as we have a root frame
+			var w = parseFloat(rect.attributes.width.value);
+			if (w > maxwidth)
+				maxwidth = w;
+
+			if (func.match(re)) {
+				// highlight
+				var x = parseFloat(rect.attributes.x.value);
+				orig_save(rect, "fill");
+				rect.attributes.fill.value = "rgb(230,0,230)";
+
+				// remember matches
+				if (matches[x] == undefined) {
+					matches[x] = w;
+				} else {
+					if (w > matches[x]) {
+						// overwrite with parent
+						matches[x] = w;
+					}
+				}
+				searching = 1;
+			}
+		}
+		if (!searching)
+			return;
+		var params = get_params();
+		params.s = currentSearchTerm;
+		history.replaceState(null, null, parse_params(params));
+
+		searchbtn.classList.add("show");
+		searchbtn.firstChild.nodeValue = "Reset Search";
+
+		// calculate percent matched, excluding vertical overlap
+		var count = 0;
+		var lastx = -1;
+		var lastw = 0;
+		var keys = Array();
+		for (k in matches) {
+			if (matches.hasOwnProperty(k))
+				keys.push(k);
+		}
+		// sort the matched frames by their x location
+		// ascending, then width descending
+		keys.sort(function(a, b){
+			return a - b;
+		});
+		// Step through frames saving only the biggest bottom-up frames
+		// thanks to the sort order. This relies on the tree property
+		// where children are always smaller than their parents.
+		var fudge = 0.0001;	// JavaScript floating point
+		for (var k in keys) {
+			var x = parseFloat(keys[k]);
+			var w = matches[keys[k]];
+			if (x >= lastx + lastw - fudge) {
+				count += w;
+				lastx = x;
+				lastw = w;
+			}
+		}
+		// display matched percent
+		matchedtxt.classList.remove("hide");
+		var pct = 100 * count / maxwidth;
+		if (pct != 100) pct = pct.toFixed(1)
+		matchedtxt.firstChild.nodeValue = "Matched: " + pct + "%";
+	}
+]]>
+</script>
+<rect x="0.0" y="0" width="1200.0" height="262.0" fill="url(#background)"  />
+<text id="title" x="600.00" y="24" >logistic_regression.bootstrap_regression_sw.mult</text>
+<text id="details" x="10.00" y="245" > </text>
+<text id="unzoom" x="10.00" y="24" class="hide">Reset Zoom</text>
+<text id="search" x="1090.00" y="24" >Search</text>
+<text id="ignorecase" x="1174.00" y="24" >ic</text>
+<text id="matched" x="1090.00" y="245" > </text>
+<g id="frames">
+<g >
+<title>basis_convert (408,944,640 mult, 0.34%)</title><rect x="355.9" y="69" width="4.0" height="15.0" fill="rgb(208,15,3)" rx="2" ry="2" />
+<text  x="358.94" y="79.5" ></text>
+</g>
+<g >
+<title>mod_down_reduce (188,743,680 mult, 0.16%)</title><rect x="1031.0" y="133" width="1.8" height="15.0" fill="rgb(244,179,42)" rx="2" ry="2" />
+<text  x="1034.00" y="143.5" ></text>
+</g>
+<g >
+<title>intt (435,159,040 mult, 0.36%)</title><rect x="485.5" y="85" width="4.2" height="15.0" fill="rgb(225,96,23)" rx="2" ry="2" />
+<text  x="488.47" y="95.5" ></text>
+</g>
+<g >
+<title>ntt (262,144,000 mult, 0.22%)</title><rect x="338.5" y="117" width="2.5" height="15.0" fill="rgb(254,226,54)" rx="2" ry="2" />
+<text  x="341.48" y="127.5" ></text>
+</g>
+<g >
+<title>compute_tf (27,918,336 mult, 0.02%)</title><rect x="416.9" y="101" width="0.3" height="15.0" fill="rgb(249,206,49)" rx="2" ry="2" />
+<text  x="419.91" y="111.5" ></text>
+</g>
+<g >
+<title>mod_down (1,520,959,488 mult, 1.26%)</title><rect x="316.7" y="101" width="14.9" height="15.0" fill="rgb(240,162,38)" rx="2" ry="2" />
+<text  x="319.68" y="111.5" ></text>
+</g>
+<g >
+<title>decompose (59,768,832 mult, 0.05%)</title><rect x="681.7" y="101" width="0.6" height="15.0" fill="rgb(218,62,14)" rx="2" ry="2" />
+<text  x="684.74" y="111.5" ></text>
+</g>
+<g >
+<title>key_switch_inner_product (182,452,224 mult, 0.15%)</title><rect x="397.3" y="101" width="1.8" height="15.0" fill="rgb(240,163,39)" rx="2" ry="2" />
+<text  x="400.34" y="111.5" ></text>
+</g>
+<g >
+<title>mult (217,055,232 mult, 0.18%)</title><rect x="1028.9" y="117" width="2.1" height="15.0" fill="rgb(206,7,1)" rx="2" ry="2" />
+<text  x="1031.87" y="127.5" ></text>
+</g>
+<g >
+<title>mod_reduce_rescale (215,482,368 mult, 0.18%)</title><rect x="523.1" y="117" width="2.1" height="15.0" fill="rgb(238,153,36)" rx="2" ry="2" />
+<text  x="526.11" y="127.5" ></text>
+</g>
+<g >
+<title>mult (143,130,624 mult, 0.12%)</title><rect x="597.0" y="53" width="1.4" height="15.0" fill="rgb(206,7,1)" rx="2" ry="2" />
+<text  x="600.05" y="63.5" ></text>
+</g>
+<g >
+<title>compute_tf (44,826,624 mult, 0.04%)</title><rect x="692.2" y="69" width="0.4" height="15.0" fill="rgb(249,206,49)" rx="2" ry="2" />
+<text  x="695.20" y="79.5" ></text>
+</g>
+<g >
+<title>intt (678,952,960 mult, 0.56%)</title><rect x="650.7" y="69" width="6.6" height="15.0" fill="rgb(225,96,23)" rx="2" ry="2" />
+<text  x="653.70" y="79.5" ></text>
+</g>
+<g >
+<title>ntt_common (13,369,344 mult, 0.01%)</title><rect x="332.1" y="69" width="0.1" height="15.0" fill="rgb(248,198,47)" rx="2" ry="2" />
+<text  x="335.09" y="79.5" ></text>
+</g>
+<g >
+<title>mod_down_divide (166,723,584 mult, 0.14%)</title><rect x="1131.0" y="101" width="1.6" height="15.0" fill="rgb(213,38,9)" rx="2" ry="2" />
+<text  x="1133.96" y="111.5" ></text>
+</g>
+<g >
+<title>ntt_common (26,738,688 mult, 0.02%)</title><rect x="1031.5" y="101" width="0.3" height="15.0" fill="rgb(248,198,47)" rx="2" ry="2" />
+<text  x="1034.50" y="111.5" ></text>
+</g>
+<g >
+<title>ntt (1,116,733,440 mult, 0.93%)</title><rect x="502.5" y="101" width="10.9" height="15.0" fill="rgb(254,226,54)" rx="2" ry="2" />
+<text  x="505.46" y="111.5" ></text>
+</g>
+<g >
+<title>multiply_plain (182,452,224 mult, 0.15%)</title><rect x="397.3" y="85" width="1.8" height="15.0" fill="rgb(225,92,22)" rx="2" ry="2" />
+<text  x="400.34" y="95.5" ></text>
+</g>
+<g >
+<title>r_square (3,513,516,032 mult, 2.91%)</title><rect x="381.3" y="149" width="34.3" height="15.0" fill="rgb(219,65,15)" rx="2" ry="2" />
+<text  x="384.27" y="159.5" >r_..</text>
+</g>
+<g >
+<title>key_switch_hoisting (1,642,856,448 mult, 1.36%)</title><rect x="381.3" y="101" width="16.0" height="15.0" fill="rgb(246,191,45)" rx="2" ry="2" />
+<text  x="384.27" y="111.5" ></text>
+</g>
+<g >
+<title>mod_down (3,548,381,184 mult, 2.94%)</title><rect x="597.0" y="85" width="34.8" height="15.0" fill="rgb(240,162,38)" rx="2" ry="2" />
+<text  x="600.05" y="95.5" >mo..</text>
+</g>
+<g >
+<title>compute_phi (26,214,400 mult, 0.02%)</title><rect x="338.5" y="101" width="0.2" height="15.0" fill="rgb(234,135,32)" rx="2" ry="2" />
+<text  x="341.48" y="111.5" ></text>
+</g>
+<g >
+<title>decompose (20,447,232 mult, 0.02%)</title><rect x="516.2" y="101" width="0.2" height="15.0" fill="rgb(218,62,14)" rx="2" ry="2" />
+<text  x="519.21" y="111.5" ></text>
+</g>
+<g >
+<title>fft (16,921,001,984 mult, 14.03%)</title><rect x="516.2" y="149" width="165.5" height="15.0" fill="rgb(246,190,45)" rx="2" ry="2" />
+<text  x="519.21" y="159.5" >fft</text>
+</g>
+<g >
+<title>multiply_plain (2,437,152,768 mult, 2.02%)</title><rect x="31.5" y="117" width="23.8" height="15.0" fill="rgb(225,92,22)" rx="2" ry="2" />
+<text  x="34.50" y="127.5" >m..</text>
+</g>
+<g >
+<title>mult (56,623,104 mult, 0.05%)</title><rect x="721.6" y="101" width="0.5" height="15.0" fill="rgb(206,7,1)" rx="2" ry="2" />
+<text  x="724.57" y="111.5" ></text>
+</g>
+<g >
+<title>intt (962,068,480 mult, 0.80%)</title><rect x="247.5" y="69" width="9.4" height="15.0" fill="rgb(225,96,23)" rx="2" ry="2" />
+<text  x="250.51" y="79.5" ></text>
+</g>
+<g >
+<title>ntt_common (280,756,224 mult, 0.23%)</title><rect x="361.7" y="53" width="2.7" height="15.0" fill="rgb(248,198,47)" rx="2" ry="2" />
+<text  x="364.65" y="63.5" ></text>
+</g>
+<g >
+<title>key_switch_hoisting (372,768,768 mult, 0.31%)</title><rect x="10.0" y="101" width="3.6" height="15.0" fill="rgb(246,191,45)" rx="2" ry="2" />
+<text  x="13.00" y="111.5" ></text>
+</g>
+<g >
+<title>ntt_common (708,575,232 mult, 0.59%)</title><rect x="307.6" y="53" width="6.9" height="15.0" fill="rgb(248,198,47)" rx="2" ry="2" />
+<text  x="310.56" y="63.5" ></text>
+</g>
+<g >
+<title>intt (173,015,040 mult, 0.14%)</title><rect x="347.6" y="69" width="1.7" height="15.0" fill="rgb(225,96,23)" rx="2" ry="2" />
+<text  x="350.58" y="79.5" ></text>
+</g>
+<g >
+<title>ntt (283,115,520 mult, 0.23%)</title><rect x="28.7" y="101" width="2.8" height="15.0" fill="rgb(254,226,54)" rx="2" ry="2" />
+<text  x="31.73" y="111.5" ></text>
+</g>
+<g >
+<title>multiply_plain (553,648,128 mult, 0.46%)</title><rect x="375.9" y="133" width="5.4" height="15.0" fill="rgb(225,92,22)" rx="2" ry="2" />
+<text  x="378.85" y="143.5" ></text>
+</g>
+<g >
+<title>ntt_common (374,341,632 mult, 0.31%)</title><rect x="406.6" y="53" width="3.7" height="15.0" fill="rgb(248,198,47)" rx="2" ry="2" />
+<text  x="409.61" y="63.5" ></text>
+</g>
+<g >
+<title>compute_tf (14,155,776 mult, 0.01%)</title><rect x="29.0" y="85" width="0.2" height="15.0" fill="rgb(249,206,49)" rx="2" ry="2" />
+<text  x="32.01" y="95.5" ></text>
+</g>
+<g >
+<title>compute_phi (176,160,768 mult, 0.15%)</title><rect x="657.3" y="53" width="1.8" height="15.0" fill="rgb(234,135,32)" rx="2" ry="2" />
+<text  x="660.34" y="63.5" ></text>
+</g>
+<g >
+<title>ntt_common (381,026,304 mult, 0.32%)</title><rect x="24.7" y="69" width="3.7" height="15.0" fill="rgb(248,198,47)" rx="2" ry="2" />
+<text  x="27.65" y="79.5" ></text>
+</g>
+<g >
+<title>compute_phi (44,826,624 mult, 0.04%)</title><rect x="24.0" y="69" width="0.4" height="15.0" fill="rgb(234,135,32)" rx="2" ry="2" />
+<text  x="27.00" y="79.5" ></text>
+</g>
+<g >
+<title>compute_tf (10,223,616 mult, 0.01%)</title><rect x="324.5" y="53" width="0.1" height="15.0" fill="rgb(249,206,49)" rx="2" ry="2" />
+<text  x="327.47" y="63.5" ></text>
+</g>
+<g >
+<title>nesterov_update (331,087,872 mult, 0.27%)</title><rect x="1031.0" y="149" width="3.2" height="15.0" fill="rgb(222,81,19)" rx="2" ry="2" />
+<text  x="1034.00" y="159.5" ></text>
+</g>
+<g >
+<title>compute_phi (261,095,424 mult, 0.22%)</title><rect x="256.9" y="53" width="2.6" height="15.0" fill="rgb(234,135,32)" rx="2" ry="2" />
+<text  x="259.92" y="63.5" ></text>
+</g>
+<g >
+<title>compute_tf (21,757,952 mult, 0.02%)</title><rect x="485.9" y="69" width="0.2" height="15.0" fill="rgb(249,206,49)" rx="2" ry="2" />
+<text  x="488.90" y="79.5" ></text>
+</g>
+<g >
+<title>basis_convert (3,647,733,760 mult, 3.02%)</title><rect x="211.8" y="69" width="35.7" height="15.0" fill="rgb(208,15,3)" rx="2" ry="2" />
+<text  x="214.83" y="79.5" >bas..</text>
+</g>
+<g >
+<title>mult (136,839,168 mult, 0.11%)</title><rect x="354.3" y="69" width="1.3" height="15.0" fill="rgb(206,7,1)" rx="2" ry="2" />
+<text  x="357.27" y="79.5" ></text>
+</g>
+<g >
+<title>compute_tf (34,209,792 mult, 0.03%)</title><rect x="391.3" y="53" width="0.4" height="15.0" fill="rgb(249,206,49)" rx="2" ry="2" />
+<text  x="394.32" y="63.5" ></text>
+</g>
+<g >
+<title>compute_tf (108,003,328 mult, 0.09%)</title><rect x="968.6" y="69" width="1.1" height="15.0" fill="rgb(249,206,49)" rx="2" ry="2" />
+<text  x="971.62" y="79.5" ></text>
+</g>
+<g >
+<title>ntt_common (1,836,056,576 mult, 1.52%)</title><rect x="969.7" y="69" width="17.9" height="15.0" fill="rgb(248,198,47)" rx="2" ry="2" />
+<text  x="972.67" y="79.5" ></text>
+</g>
+<g >
+<title>ntt (1,572,864,000 mult, 1.30%)</title><rect x="1171.0" y="101" width="15.4" height="15.0" fill="rgb(254,226,54)" rx="2" ry="2" />
+<text  x="1174.00" y="111.5" ></text>
+</g>
+<g >
+<title>multiply_plain (22,020,096 mult, 0.02%)</title><rect x="1034.0" y="133" width="0.2" height="15.0" fill="rgb(225,92,22)" rx="2" ry="2" />
+<text  x="1037.02" y="143.5" ></text>
+</g>
+<g >
+<title>all (120,621,367,296 mult, 100%)</title><rect x="10.0" y="213" width="1180.0" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="13.00" y="223.5" ></text>
+</g>
+<g >
+<title>ntt_common (120,324,096 mult, 0.10%)</title><rect x="12.5" y="53" width="1.1" height="15.0" fill="rgb(248,198,47)" rx="2" ry="2" />
+<text  x="15.47" y="63.5" ></text>
+</g>
+<g >
+<title>mult (261,095,424 mult, 0.22%)</title><rect x="209.3" y="69" width="2.5" height="15.0" fill="rgb(206,7,1)" rx="2" ry="2" />
+<text  x="212.27" y="79.5" ></text>
+</g>
+<g >
+<title>ntt_common (13,369,344 mult, 0.01%)</title><rect x="410.7" y="69" width="0.1" height="15.0" fill="rgb(248,198,47)" rx="2" ry="2" />
+<text  x="413.71" y="79.5" ></text>
+</g>
+<g >
+<title>mod_down_reduce (1,095,237,632 mult, 0.91%)</title><rect x="399.6" y="85" width="10.7" height="15.0" fill="rgb(244,179,42)" rx="2" ry="2" />
+<text  x="402.56" y="95.5" ></text>
+</g>
+<g >
+<title>compute_tf (11,403,264 mult, 0.01%)</title><rect x="388.6" y="53" width="0.2" height="15.0" fill="rgb(249,206,49)" rx="2" ry="2" />
+<text  x="391.64" y="63.5" ></text>
+</g>
+<g >
+<title>compute_phi (11,010,048 mult, 0.01%)</title><rect x="1031.8" y="101" width="0.1" height="15.0" fill="rgb(234,135,32)" rx="2" ry="2" />
+<text  x="1034.76" y="111.5" ></text>
+</g>
+<g >
+<title>compute_tf (16,515,072 mult, 0.01%)</title><rect x="361.5" y="53" width="0.2" height="15.0" fill="rgb(249,206,49)" rx="2" ry="2" />
+<text  x="364.49" y="63.5" ></text>
+</g>
+<g >
+<title>rotate (9,249,226,752 mult, 7.67%)</title><rect x="541.3" y="117" width="90.5" height="15.0" fill="rgb(232,125,30)" rx="2" ry="2" />
+<text  x="544.28" y="127.5" >rotate</text>
+</g>
+<g >
+<title>ntt_common (26,738,688 mult, 0.02%)</title><rect x="715.8" y="85" width="0.3" height="15.0" fill="rgb(248,198,47)" rx="2" ry="2" />
+<text  x="718.80" y="95.5" ></text>
+</g>
+<g >
+<title>compute_phi (30,670,848 mult, 0.03%)</title><rect x="520.1" y="69" width="0.3" height="15.0" fill="rgb(234,135,32)" rx="2" ry="2" />
+<text  x="523.11" y="79.5" ></text>
+</g>
+<g >
+<title>ntt (188,743,680 mult, 0.16%)</title><rect x="523.4" y="101" width="1.8" height="15.0" fill="rgb(254,226,54)" rx="2" ry="2" />
+<text  x="526.37" y="111.5" ></text>
+</g>
+<g >
+<title>compute_phi (726,663,168 mult, 0.60%)</title><rect x="797.0" y="69" width="7.1" height="15.0" fill="rgb(234,135,32)" rx="2" ry="2" />
+<text  x="799.96" y="79.5" ></text>
+</g>
+<g >
+<title>ntt (671,088,640 mult, 0.56%)</title><rect x="369.3" y="117" width="6.6" height="15.0" fill="rgb(254,226,54)" rx="2" ry="2" />
+<text  x="372.29" y="127.5" ></text>
+</g>
+<g >
+<title>partial_multiply_inner (56,623,104 mult, 0.05%)</title><rect x="721.6" y="117" width="0.5" height="15.0" fill="rgb(221,75,17)" rx="2" ry="2" />
+<text  x="724.57" y="127.5" ></text>
+</g>
+<g >
+<title>key_switch_hoisting (5,106,302,976 mult, 4.23%)</title><rect x="541.3" y="85" width="49.9" height="15.0" fill="rgb(246,191,45)" rx="2" ry="2" />
+<text  x="544.28" y="95.5" >key_s..</text>
+</g>
+<g >
+<title>mod_down_divide (212,336,640 mult, 0.18%)</title><rect x="149.9" y="69" width="2.0" height="15.0" fill="rgb(213,38,9)" rx="2" ry="2" />
+<text  x="152.86" y="79.5" ></text>
+</g>
+<g >
+<title>compute_tf (111,673,344 mult, 0.09%)</title><rect x="571.6" y="37" width="1.1" height="15.0" fill="rgb(249,206,49)" rx="2" ry="2" />
+<text  x="574.57" y="47.5" ></text>
+</g>
+<g >
+<title>mult (44,040,192 mult, 0.04%)</title><rect x="1053.5" y="101" width="0.4" height="15.0" fill="rgb(206,7,1)" rx="2" ry="2" />
+<text  x="1056.47" y="111.5" ></text>
+</g>
+<g >
+<title>ntt_common (601,620,480 mult, 0.50%)</title><rect x="1042.0" y="85" width="5.9" height="15.0" fill="rgb(248,198,47)" rx="2" ry="2" />
+<text  x="1045.04" y="95.5" ></text>
+</g>
+<g >
+<title>ntt (566,231,040 mult, 0.47%)</title><rect x="709.7" y="85" width="5.5" height="15.0" fill="rgb(254,226,54)" rx="2" ry="2" />
+<text  x="712.69" y="95.5" ></text>
+</g>
+<g >
+<title>basis_convert (1,760,296,960 mult, 1.46%)</title><rect x="633.5" y="69" width="17.2" height="15.0" fill="rgb(208,15,3)" rx="2" ry="2" />
+<text  x="636.48" y="79.5" ></text>
+</g>
+<g >
+<title>ntt_common (240,648,192 mult, 0.20%)</title><rect x="29.2" y="85" width="2.3" height="15.0" fill="rgb(248,198,47)" rx="2" ry="2" />
+<text  x="32.15" y="95.5" ></text>
+</g>
+<g >
+<title>decompose (217,055,232 mult, 0.18%)</title><rect x="55.3" y="69" width="2.2" height="15.0" fill="rgb(218,62,14)" rx="2" ry="2" />
+<text  x="58.35" y="79.5" ></text>
+</g>
+<g >
+<title>ntt (110,100,480 mult, 0.09%)</title><rect x="1031.8" y="117" width="1.0" height="15.0" fill="rgb(254,226,54)" rx="2" ry="2" />
+<text  x="1034.76" y="127.5" ></text>
+</g>
+<g >
+<title>intt (880,803,840 mult, 0.73%)</title><rect x="1089.6" y="85" width="8.6" height="15.0" fill="rgb(225,96,23)" rx="2" ry="2" />
+<text  x="1092.60" y="95.5" ></text>
+</g>
+<g >
+<title>key_switch (9,249,226,752 mult, 7.67%)</title><rect x="541.3" y="101" width="90.5" height="15.0" fill="rgb(223,87,20)" rx="2" ry="2" />
+<text  x="544.28" y="111.5" >key_switch</text>
+</g>
+<g >
+<title>ntt_common (2,219,311,104 mult, 1.84%)</title><rect x="260.8" y="53" width="21.7" height="15.0" fill="rgb(248,198,47)" rx="2" ry="2" />
+<text  x="263.76" y="63.5" >n..</text>
+</g>
+<g >
+<title>decompose (147,849,216 mult, 0.12%)</title><rect x="541.3" y="69" width="1.4" height="15.0" fill="rgb(218,62,14)" rx="2" ry="2" />
+<text  x="544.28" y="79.5" ></text>
+</g>
+<g >
+<title>multiply_plain (223,346,688 mult, 0.19%)</title><rect x="314.5" y="85" width="2.2" height="15.0" fill="rgb(225,92,22)" rx="2" ry="2" />
+<text  x="317.49" y="95.5" ></text>
+</g>
+<g >
+<title>decompose (459,276,288 mult, 0.38%)</title><rect x="722.7" y="101" width="4.5" height="15.0" fill="rgb(218,62,14)" rx="2" ry="2" />
+<text  x="725.67" y="111.5" ></text>
+</g>
+<g >
+<title>mult (476,577,792 mult, 0.40%)</title><rect x="465.9" y="85" width="4.6" height="15.0" fill="rgb(206,7,1)" rx="2" ry="2" />
+<text  x="468.87" y="95.5" ></text>
+</g>
+<g >
+<title>basis_convert (122,683,392 mult, 0.10%)</title><rect x="14.1" y="69" width="1.2" height="15.0" fill="rgb(208,15,3)" rx="2" ry="2" />
+<text  x="17.11" y="79.5" ></text>
+</g>
+<g >
+<title>ntt_common (222,822,400 mult, 0.18%)</title><rect x="338.9" y="101" width="2.1" height="15.0" fill="rgb(248,198,47)" rx="2" ry="2" />
+<text  x="341.86" y="111.5" ></text>
+</g>
+<g >
+<title>mod_down (1,139,277,824 mult, 0.94%)</title><rect x="399.1" y="101" width="11.2" height="15.0" fill="rgb(240,162,38)" rx="2" ry="2" />
+<text  x="402.13" y="111.5" ></text>
+</g>
+<g >
+<title>mult (421,527,552 mult, 0.35%)</title><rect x="924.2" y="85" width="4.1" height="15.0" fill="rgb(206,7,1)" rx="2" ry="2" />
+<text  x="927.18" y="95.5" ></text>
+</g>
+<g >
+<title>partial_multiply_inner (166,723,584 mult, 0.14%)</title><rect x="1187.2" y="117" width="1.6" height="15.0" fill="rgb(221,75,17)" rx="2" ry="2" />
+<text  x="1190.20" y="127.5" ></text>
+</g>
+<g >
+<title>ntt_common (1,951,924,224 mult, 1.62%)</title><rect x="777.9" y="69" width="19.1" height="15.0" fill="rgb(248,198,47)" rx="2" ry="2" />
+<text  x="780.87" y="79.5" ></text>
+</g>
+<g >
+<title>mod_down (257,687,552 mult, 0.21%)</title><rect x="14.0" y="101" width="2.5" height="15.0" fill="rgb(240,162,38)" rx="2" ry="2" />
+<text  x="17.02" y="111.5" ></text>
+</g>
+<g >
+<title>partial_multiply_inner (54,001,664 mult, 0.04%)</title><rect x="337.6" y="101" width="0.5" height="15.0" fill="rgb(221,75,17)" rx="2" ry="2" />
+<text  x="340.62" y="111.5" ></text>
+</g>
+<g >
+<title>decompose (56,623,104 mult, 0.05%)</title><rect x="293.0" y="85" width="0.5" height="15.0" fill="rgb(218,62,14)" rx="2" ry="2" />
+<text  x="295.95" y="95.5" ></text>
+</g>
+<g >
+<title>double_multiply (3,513,516,032 mult, 2.91%)</title><rect x="381.3" y="133" width="34.3" height="15.0" fill="rgb(209,21,5)" rx="2" ry="2" />
+<text  x="384.27" y="143.5" >do..</text>
+</g>
+<g >
+<title>mod_down_divide (261,095,424 mult, 0.22%)</title><rect x="209.3" y="85" width="2.5" height="15.0" fill="rgb(213,38,9)" rx="2" ry="2" />
+<text  x="212.27" y="95.5" ></text>
+</g>
+<g >
+<title>mod_down_reduce (3,674,210,304 mult, 3.05%)</title><rect x="1132.6" y="101" width="35.9" height="15.0" fill="rgb(244,179,42)" rx="2" ry="2" />
+<text  x="1135.59" y="111.5" >mod..</text>
+</g>
+<g >
+<title>mult (57,671,680 mult, 0.05%)</title><rect x="513.4" y="117" width="0.6" height="15.0" fill="rgb(206,7,1)" rx="2" ry="2" />
+<text  x="516.39" y="127.5" ></text>
+</g>
+<g >
+<title>ntt_common (160,432,128 mult, 0.13%)</title><rect x="1057.2" y="85" width="1.5" height="15.0" fill="rgb(248,198,47)" rx="2" ry="2" />
+<text  x="1060.15" y="95.5" ></text>
+</g>
+<g >
+<title>compute_tf (106,168,320 mult, 0.09%)</title><rect x="190.6" y="37" width="1.0" height="15.0" fill="rgb(249,206,49)" rx="2" ry="2" />
+<text  x="193.58" y="47.5" ></text>
+</g>
+<g >
+<title>ntt_common (459,014,144 mult, 0.38%)</title><rect x="327.1" y="53" width="4.5" height="15.0" fill="rgb(248,198,47)" rx="2" ry="2" />
+<text  x="330.07" y="63.5" ></text>
+</g>
+<g >
+<title>compute_phi (10,223,616 mult, 0.01%)</title><rect x="519.1" y="69" width="0.1" height="15.0" fill="rgb(234,135,32)" rx="2" ry="2" />
+<text  x="522.11" y="79.5" ></text>
+</g>
+<g >
+<title>intt (781,189,120 mult, 0.65%)</title><rect x="180.9" y="53" width="7.6" height="15.0" fill="rgb(225,96,23)" rx="2" ry="2" />
+<text  x="183.86" y="63.5" ></text>
+</g>
+<g >
+<title>decompose (29,884,416 mult, 0.02%)</title><rect x="16.5" y="101" width="0.3" height="15.0" fill="rgb(218,62,14)" rx="2" ry="2" />
+<text  x="19.54" y="111.5" ></text>
+</g>
+<g >
+<title>key_switch_hoisting (5,511,315,456 mult, 4.57%)</title><rect x="1070.2" y="117" width="53.9" height="15.0" fill="rgb(246,191,45)" rx="2" ry="2" />
+<text  x="1073.15" y="127.5" >key_s..</text>
+</g>
+<g >
+<title>multiply_plain (239,075,328 mult, 0.20%)</title><rect x="700.1" y="101" width="2.3" height="15.0" fill="rgb(225,92,22)" rx="2" ry="2" />
+<text  x="703.10" y="111.5" ></text>
+</g>
+<g >
+<title>rotate (668,205,056 mult, 0.55%)</title><rect x="10.0" y="133" width="6.5" height="15.0" fill="rgb(232,125,30)" rx="2" ry="2" />
+<text  x="13.00" y="143.5" ></text>
+</g>
+<g >
+<title>mult (223,346,688 mult, 0.19%)</title><rect x="314.5" y="69" width="2.2" height="15.0" fill="rgb(206,7,1)" rx="2" ry="2" />
+<text  x="317.49" y="79.5" ></text>
+</g>
+<g >
+<title>compute_phi (20,447,232 mult, 0.02%)</title><rect x="324.3" y="53" width="0.2" height="15.0" fill="rgb(234,135,32)" rx="2" ry="2" />
+<text  x="327.27" y="63.5" ></text>
+</g>
+<g >
+<title>ntt_common (1,517,420,544 mult, 1.26%)</title><rect x="451.0" y="69" width="14.9" height="15.0" fill="rgb(248,198,47)" rx="2" ry="2" />
+<text  x="454.02" y="79.5" ></text>
+</g>
+<g >
+<title>key_switch_inner_product (239,075,328 mult, 0.20%)</title><rect x="700.1" y="117" width="2.3" height="15.0" fill="rgb(240,163,39)" rx="2" ry="2" />
+<text  x="703.10" y="127.5" ></text>
+</g>
+<g >
+<title>ntt_common (445,644,800 mult, 0.37%)</title><rect x="333.0" y="69" width="4.4" height="15.0" fill="rgb(248,198,47)" rx="2" ry="2" />
+<text  x="335.99" y="79.5" ></text>
+</g>
+<g >
+<title>ntt_common (628,359,168 mult, 0.52%)</title><rect x="563.2" y="37" width="6.2" height="15.0" fill="rgb(248,198,47)" rx="2" ry="2" />
+<text  x="566.23" y="47.5" ></text>
+</g>
+<g >
+<title>multiply (2,745,171,968 mult, 2.28%)</title><rect x="341.6" y="117" width="26.8" height="15.0" fill="rgb(225,94,22)" rx="2" ry="2" />
+<text  x="344.57" y="127.5" >m..</text>
+</g>
+<g >
+<title>compute_phi (33,030,144 mult, 0.03%)</title><rect x="361.2" y="53" width="0.3" height="15.0" fill="rgb(234,135,32)" rx="2" ry="2" />
+<text  x="364.17" y="63.5" ></text>
+</g>
+<g >
+<title>basis_convert (408,944,640 mult, 0.34%)</title><rect x="1034.7" y="101" width="4.0" height="15.0" fill="rgb(208,15,3)" rx="2" ry="2" />
+<text  x="1037.70" y="111.5" ></text>
+</g>
+<g >
+<title>mult (5,737,807,872 mult, 4.76%)</title><rect x="868.0" y="85" width="56.2" height="15.0" fill="rgb(206,7,1)" rx="2" ry="2" />
+<text  x="871.05" y="95.5" >mult</text>
+</g>
+<g >
+<title>rotate_digits (8,553,758,720 mult, 7.09%)</title><rect x="209.3" y="117" width="83.7" height="15.0" fill="rgb(208,15,3)" rx="2" ry="2" />
+<text  x="212.27" y="127.5" >rotate_di..</text>
+</g>
+<g >
+<title>ntt (319,815,680 mult, 0.27%)</title><rect x="364.8" y="85" width="3.1" height="15.0" fill="rgb(254,226,54)" rx="2" ry="2" />
+<text  x="367.81" y="95.5" ></text>
+</g>
+<g >
+<title>mult (732,168,192 mult, 0.61%)</title><rect x="674.6" y="85" width="7.1" height="15.0" fill="rgb(206,7,1)" rx="2" ry="2" />
+<text  x="677.58" y="95.5" ></text>
+</g>
+<g >
+<title>ntt (2,642,411,520 mult, 2.19%)</title><rect x="1098.2" y="85" width="25.9" height="15.0" fill="rgb(254,226,54)" rx="2" ry="2" />
+<text  x="1101.22" y="95.5" >ntt</text>
+</g>
+<g >
+<title>mult (27,000,832 mult, 0.02%)</title><rect x="337.4" y="101" width="0.2" height="15.0" fill="rgb(206,7,1)" rx="2" ry="2" />
+<text  x="340.35" y="111.5" ></text>
+</g>
+<g >
+<title>intt (31,457,280 mult, 0.03%)</title><rect x="1031.5" y="117" width="0.3" height="15.0" fill="rgb(225,96,23)" rx="2" ry="2" />
+<text  x="1034.46" y="127.5" ></text>
+</g>
+<g >
+<title>decompose (45,613,056 mult, 0.04%)</title><rect x="381.3" y="85" width="0.4" height="15.0" fill="rgb(218,62,14)" rx="2" ry="2" />
+<text  x="384.27" y="95.5" ></text>
+</g>
+<g >
+<title>intt (15,728,640 mult, 0.01%)</title><rect x="410.7" y="85" width="0.1" height="15.0" fill="rgb(225,96,23)" rx="2" ry="2" />
+<text  x="413.69" y="95.5" ></text>
+</g>
+<g >
+<title>inner_product (35,701,391,360 mult, 29.60%)</title><rect x="681.7" y="149" width="349.3" height="15.0" fill="rgb(243,178,42)" rx="2" ry="2" />
+<text  x="684.74" y="159.5" >inner_product</text>
+</g>
+<g >
+<title>intt (125,829,120 mult, 0.10%)</title><rect x="359.9" y="69" width="1.3" height="15.0" fill="rgb(225,96,23)" rx="2" ry="2" />
+<text  x="362.94" y="79.5" ></text>
+</g>
+<g >
+<title>intt (15,728,640 mult, 0.01%)</title><rect x="1067.2" y="117" width="0.2" height="15.0" fill="rgb(225,96,23)" rx="2" ry="2" />
+<text  x="1070.23" y="127.5" ></text>
+</g>
+<g >
+<title>ntt_common (80,216,064 mult, 0.07%)</title><rect x="1170.2" y="85" width="0.8" height="15.0" fill="rgb(248,198,47)" rx="2" ry="2" />
+<text  x="1173.21" y="95.5" ></text>
+</g>
+<g >
+<title>ntt_common (762,052,608 mult, 0.63%)</title><rect x="692.6" y="69" width="7.5" height="15.0" fill="rgb(248,198,47)" rx="2" ry="2" />
+<text  x="695.64" y="79.5" ></text>
+</g>
+<g >
+<title>compute_phi (264,241,152 mult, 0.22%)</title><rect x="1098.2" y="69" width="2.6" height="15.0" fill="rgb(234,135,32)" rx="2" ry="2" />
+<text  x="1101.22" y="79.5" ></text>
+</g>
+<g >
+<title>decompose (119,537,664 mult, 0.10%)</title><rect x="421.8" y="101" width="1.2" height="15.0" fill="rgb(218,62,14)" rx="2" ry="2" />
+<text  x="424.83" y="111.5" ></text>
+</g>
+<g >
+<title>double_multiply (2,745,171,968 mult, 2.28%)</title><rect x="341.6" y="133" width="26.8" height="15.0" fill="rgb(209,21,5)" rx="2" ry="2" />
+<text  x="344.57" y="143.5" >d..</text>
+</g>
+<g >
+<title>ntt_common (93,585,408 mult, 0.08%)</title><rect x="1031.9" y="101" width="0.9" height="15.0" fill="rgb(248,198,47)" rx="2" ry="2" />
+<text  x="1034.93" y="111.5" ></text>
+</g>
+<g >
+<title>ntt_common (254,017,536 mult, 0.21%)</title><rect x="688.8" y="69" width="2.5" height="15.0" fill="rgb(248,198,47)" rx="2" ry="2" />
+<text  x="691.84" y="79.5" ></text>
+</g>
+<g >
+<title>compute_phi (68,157,440 mult, 0.06%)</title><rect x="1145.6" y="69" width="0.6" height="15.0" fill="rgb(234,135,32)" rx="2" ry="2" />
+<text  x="1148.56" y="79.5" ></text>
+</g>
+<g >
+<title>sigmoid_product (12,957,253,632 mult, 10.74%)</title><rect x="1063.2" y="149" width="126.8" height="15.0" fill="rgb(250,207,49)" rx="2" ry="2" />
+<text  x="1066.24" y="159.5" >sigmoid_product</text>
+</g>
+<g >
+<title>intt (204,472,320 mult, 0.17%)</title><rect x="324.3" y="69" width="2.0" height="15.0" fill="rgb(225,96,23)" rx="2" ry="2" />
+<text  x="327.27" y="79.5" ></text>
+</g>
+<g >
+<title>ntt_common (13,369,344 mult, 0.01%)</title><rect x="1067.3" y="101" width="0.1" height="15.0" fill="rgb(248,198,47)" rx="2" ry="2" />
+<text  x="1070.25" y="111.5" ></text>
+</g>
+<g >
+<title>compute_phi (23,068,672 mult, 0.02%)</title><rect x="707.4" y="69" width="0.3" height="15.0" fill="rgb(234,135,32)" rx="2" ry="2" />
+<text  x="710.43" y="79.5" ></text>
+</g>
+<g >
+<title>multiply_plain (56,623,104 mult, 0.05%)</title><rect x="722.1" y="133" width="0.6" height="15.0" fill="rgb(225,92,22)" rx="2" ry="2" />
+<text  x="725.12" y="143.5" ></text>
+</g>
+<g >
+<title>partial_multiply_inner (44,040,192 mult, 0.04%)</title><rect x="415.2" y="101" width="0.4" height="15.0" fill="rgb(221,75,17)" rx="2" ry="2" />
+<text  x="418.21" y="111.5" ></text>
+</g>
+<g >
+<title>multiply_plain (704,643,072 mult, 0.58%)</title><rect x="1124.1" y="101" width="6.9" height="15.0" fill="rgb(225,92,22)" rx="2" ry="2" />
+<text  x="1127.07" y="111.5" ></text>
+</g>
+<g >
+<title>intt (36,700,160 mult, 0.03%)</title><rect x="502.1" y="101" width="0.4" height="15.0" fill="rgb(225,96,23)" rx="2" ry="2" />
+<text  x="505.10" y="111.5" ></text>
+</g>
+<g >
+<title>compute_phi (216,006,656 mult, 0.18%)</title><rect x="966.5" y="69" width="2.1" height="15.0" fill="rgb(234,135,32)" rx="2" ry="2" />
+<text  x="969.50" y="79.5" ></text>
+</g>
+<g >
+<title>compute_phi (43,515,904 mult, 0.04%)</title><rect x="485.5" y="69" width="0.4" height="15.0" fill="rgb(234,135,32)" rx="2" ry="2" />
+<text  x="488.47" y="79.5" ></text>
+</g>
+<g >
+<title>ntt (306,708,480 mult, 0.25%)</title><rect x="520.1" y="85" width="3.0" height="15.0" fill="rgb(254,226,54)" rx="2" ry="2" />
+<text  x="523.11" y="95.5" ></text>
+</g>
+<g >
+<title>ntt_common (40,108,032 mult, 0.03%)</title><rect x="11.9" y="53" width="0.4" height="15.0" fill="rgb(248,198,47)" rx="2" ry="2" />
+<text  x="14.87" y="63.5" ></text>
+</g>
+<g >
+<title>partial_multiply_inner (33,030,144 mult, 0.03%)</title><rect x="368.1" y="101" width="0.3" height="15.0" fill="rgb(221,75,17)" rx="2" ry="2" />
+<text  x="371.10" y="111.5" ></text>
+</g>
+<g >
+<title>compute_tf (83,361,792 mult, 0.07%)</title><rect x="1153.9" y="69" width="0.8" height="15.0" fill="rgb(249,206,49)" rx="2" ry="2" />
+<text  x="1156.86" y="79.5" ></text>
+</g>
+<g >
+<title>rotate_digits (5,109,186,560 mult, 4.24%)</title><rect x="631.8" y="117" width="49.9" height="15.0" fill="rgb(208,15,3)" rx="2" ry="2" />
+<text  x="634.76" y="127.5" >rotat..</text>
+</g>
+<g >
+<title>decompose (34,603,008 mult, 0.03%)</title><rect x="341.6" y="85" width="0.3" height="15.0" fill="rgb(218,62,14)" rx="2" ry="2" />
+<text  x="344.57" y="95.5" ></text>
+</g>
+<g >
+<title>compute_phi (223,346,688 mult, 0.19%)</title><rect x="569.4" y="37" width="2.2" height="15.0" fill="rgb(234,135,32)" rx="2" ry="2" />
+<text  x="572.38" y="47.5" ></text>
+</g>
+<g >
+<title>compute_tf (12,582,912 mult, 0.01%)</title><rect x="1064.7" y="101" width="0.2" height="15.0" fill="rgb(249,206,49)" rx="2" ry="2" />
+<text  x="1067.74" y="111.5" ></text>
+</g>
+<g >
+<title>compute_phi (28,311,552 mult, 0.02%)</title><rect x="303.6" y="53" width="0.2" height="15.0" fill="rgb(234,135,32)" rx="2" ry="2" />
+<text  x="306.57" y="63.5" ></text>
+</g>
+<g >
+<title>mod_down_divide (176,160,768 mult, 0.15%)</title><rect x="631.8" y="85" width="1.7" height="15.0" fill="rgb(213,38,9)" rx="2" ry="2" />
+<text  x="634.76" y="95.5" ></text>
+</g>
+<g >
+<title>compute_phi (88,080,384 mult, 0.07%)</title><rect x="1089.6" y="69" width="0.9" height="15.0" fill="rgb(234,135,32)" rx="2" ry="2" />
+<text  x="1092.60" y="79.5" ></text>
+</g>
+<g >
+<title>mod_raise (4,381,999,104 mult, 3.63%)</title><rect x="423.0" y="101" width="42.9" height="15.0" fill="rgb(246,188,45)" rx="2" ry="2" />
+<text  x="426.00" y="111.5" >mod_..</text>
+</g>
+<g >
+<title>compute_tf (11,534,336 mult, 0.01%)</title><rect x="707.7" y="69" width="0.1" height="15.0" fill="rgb(249,206,49)" rx="2" ry="2" />
+<text  x="710.66" y="79.5" ></text>
+</g>
+<g >
+<title>key_switch_hoisting (4,501,536,768 mult, 3.73%)</title><rect x="421.8" y="117" width="44.1" height="15.0" fill="rgb(246,191,45)" rx="2" ry="2" />
+<text  x="424.83" y="127.5" >key_..</text>
+</g>
+<g >
+<title>ntt_common (369,885,184 mult, 0.31%)</title><rect x="486.1" y="69" width="3.6" height="15.0" fill="rgb(248,198,47)" rx="2" ry="2" />
+<text  x="489.11" y="79.5" ></text>
+</g>
+<g >
+<title>key_switch_hoisting (1,210,712,064 mult, 1.00%)</title><rect x="16.5" y="117" width="11.9" height="15.0" fill="rgb(246,191,45)" rx="2" ry="2" />
+<text  x="19.54" y="127.5" ></text>
+</g>
+<g >
+<title>mod_raise (4,958,453,760 mult, 4.11%)</title><rect x="542.7" y="69" width="48.5" height="15.0" fill="rgb(246,188,45)" rx="2" ry="2" />
+<text  x="545.72" y="79.5" >mod_..</text>
+</g>
+<g >
+<title>mod_raise (1,816,657,920 mult, 1.51%)</title><rect x="682.3" y="101" width="17.8" height="15.0" fill="rgb(246,188,45)" rx="2" ry="2" />
+<text  x="685.32" y="111.5" ></text>
+</g>
+<g >
+<title>basis_convert (276,430,848 mult, 0.23%)</title><rect x="516.4" y="85" width="2.7" height="15.0" fill="rgb(208,15,3)" rx="2" ry="2" />
+<text  x="519.41" y="95.5" ></text>
+</g>
+<g >
+<title>intt (102,236,160 mult, 0.08%)</title><rect x="519.1" y="85" width="1.0" height="15.0" fill="rgb(225,96,23)" rx="2" ry="2" />
+<text  x="522.11" y="95.5" ></text>
+</g>
+<g >
+<title>mod_raise (1,263,796,224 mult, 1.05%)</title><rect x="341.9" y="85" width="12.4" height="15.0" fill="rgb(246,188,45)" rx="2" ry="2" />
+<text  x="344.91" y="95.5" ></text>
+</g>
+<g >
+<title>ntt_common (142,606,336 mult, 0.12%)</title><rect x="404.6" y="53" width="1.4" height="15.0" fill="rgb(248,198,47)" rx="2" ry="2" />
+<text  x="407.57" y="63.5" ></text>
+</g>
+<g >
+<title>compute_tf (55,836,672 mult, 0.05%)</title><rect x="503.6" y="85" width="0.5" height="15.0" fill="rgb(249,206,49)" rx="2" ry="2" />
+<text  x="506.55" y="95.5" ></text>
+</g>
+<g >
+<title>mod_raise (5,335,154,688 mult, 4.42%)</title><rect x="1071.9" y="101" width="52.2" height="15.0" fill="rgb(246,188,45)" rx="2" ry="2" />
+<text  x="1074.88" y="111.5" >mod_r..</text>
+</g>
+<g >
+<title>mult (594,542,592 mult, 0.49%)</title><rect x="591.2" y="53" width="5.8" height="15.0" fill="rgb(206,7,1)" rx="2" ry="2" />
+<text  x="594.23" y="63.5" ></text>
+</g>
+<g >
+<title>multiply (3,513,516,032 mult, 2.91%)</title><rect x="381.3" y="117" width="34.3" height="15.0" fill="rgb(225,94,22)" rx="2" ry="2" />
+<text  x="384.27" y="127.5" >mu..</text>
+</g>
+<g >
+<title>compute_tf (34,078,720 mult, 0.03%)</title><rect x="1146.2" y="69" width="0.4" height="15.0" fill="rgb(249,206,49)" rx="2" ry="2" />
+<text  x="1149.22" y="79.5" ></text>
+</g>
+<g >
+<title>compute_phi (59,768,832 mult, 0.05%)</title><rect x="442.6" y="69" width="0.5" height="15.0" fill="rgb(234,135,32)" rx="2" ry="2" />
+<text  x="445.56" y="79.5" ></text>
+</g>
+<g >
+<title>mod_down_reduce (933,232,640 mult, 0.77%)</title><rect x="1053.9" y="117" width="9.1" height="15.0" fill="rgb(244,179,42)" rx="2" ry="2" />
+<text  x="1056.90" y="127.5" ></text>
+</g>
+<g >
+<title>mult (115,343,360 mult, 0.10%)</title><rect x="515.1" y="117" width="1.1" height="15.0" fill="rgb(206,7,1)" rx="2" ry="2" />
+<text  x="518.08" y="127.5" ></text>
+</g>
+<g >
+<title>compute_phi (108,527,616 mult, 0.09%)</title><rect x="98.7" y="37" width="1.1" height="15.0" fill="rgb(234,135,32)" rx="2" ry="2" />
+<text  x="101.71" y="47.5" ></text>
+</g>
+<g >
+<title>ntt (424,673,280 mult, 0.35%)</title><rect x="410.8" y="85" width="4.2" height="15.0" fill="rgb(254,226,54)" rx="2" ry="2" />
+<text  x="413.84" y="95.5" ></text>
+</g>
+<g >
+<title>mod_down_reduce (865,075,200 mult, 0.72%)</title><rect x="355.9" y="85" width="8.5" height="15.0" fill="rgb(244,179,42)" rx="2" ry="2" />
+<text  x="358.94" y="95.5" ></text>
+</g>
+<g >
+<title>basis_convert (1,411,907,584 mult, 1.17%)</title><rect x="471.7" y="85" width="13.8" height="15.0" fill="rgb(208,15,3)" rx="2" ry="2" />
+<text  x="474.66" y="95.5" ></text>
+</g>
+<g >
+<title>key_switch_hoisting (8,789,950,464 mult, 7.29%)</title><rect x="55.3" y="85" width="86.0" height="15.0" fill="rgb(246,191,45)" rx="2" ry="2" />
+<text  x="58.35" y="95.5" >key_switch..</text>
+</g>
+<g >
+<title>compute_tf (15,335,424 mult, 0.01%)</title><rect x="520.4" y="69" width="0.2" height="15.0" fill="rgb(249,206,49)" rx="2" ry="2" />
+<text  x="523.41" y="79.5" ></text>
+</g>
+<g >
+<title>ntt_common (3,582,984,192 mult, 2.97%)</title><rect x="993.8" y="69" width="35.1" height="15.0" fill="rgb(248,198,47)" rx="2" ry="2" />
+<text  x="996.82" y="79.5" >nt..</text>
+</g>
+<g >
+<title>compute_tf (363,331,584 mult, 0.30%)</title><rect x="804.1" y="69" width="3.5" height="15.0" fill="rgb(249,206,49)" rx="2" ry="2" />
+<text  x="807.07" y="79.5" ></text>
+</g>
+<g >
+<title>multiply_plain (136,839,168 mult, 0.11%)</title><rect x="354.3" y="85" width="1.3" height="15.0" fill="rgb(225,92,22)" rx="2" ry="2" />
+<text  x="357.27" y="95.5" ></text>
+</g>
+<g >
+<title>intt (2,160,066,560 mult, 1.79%)</title><rect x="966.5" y="85" width="21.1" height="15.0" fill="rgb(225,96,23)" rx="2" ry="2" />
+<text  x="969.50" y="95.5" ></text>
+</g>
+<g >
+<title>compute_phi (18,874,368 mult, 0.02%)</title><rect x="1056.9" y="85" width="0.2" height="15.0" fill="rgb(234,135,32)" rx="2" ry="2" />
+<text  x="1059.87" y="95.5" ></text>
+</g>
+<g >
+<title>ntt_common (748,683,264 mult, 0.62%)</title><rect x="1090.9" y="69" width="7.3" height="15.0" fill="rgb(248,198,47)" rx="2" ry="2" />
+<text  x="1093.89" y="79.5" ></text>
+</g>
+<g >
+<title>ntt_common (1,216,610,304 mult, 1.01%)</title><rect x="619.9" y="37" width="11.9" height="15.0" fill="rgb(248,198,47)" rx="2" ry="2" />
+<text  x="622.86" y="47.5" ></text>
+</g>
+<g >
+<title>ntt_common (374,341,632 mult, 0.31%)</title><rect x="1059.4" y="85" width="3.6" height="15.0" fill="rgb(248,198,47)" rx="2" ry="2" />
+<text  x="1062.37" y="95.5" ></text>
+</g>
+<g >
+<title>ntt_common (15,597,568 mult, 0.01%)</title><rect x="416.2" y="101" width="0.2" height="15.0" fill="rgb(248,198,47)" rx="2" ry="2" />
+<text  x="419.21" y="111.5" ></text>
+</g>
+<g >
+<title>ntt (251,658,240 mult, 0.21%)</title><rect x="1064.5" y="117" width="2.5" height="15.0" fill="rgb(254,226,54)" rx="2" ry="2" />
+<text  x="1067.49" y="127.5" ></text>
+</g>
+<g >
+<title>multiply_plain (732,168,192 mult, 0.61%)</title><rect x="674.6" y="101" width="7.1" height="15.0" fill="rgb(225,92,22)" rx="2" ry="2" />
+<text  x="677.58" y="111.5" ></text>
+</g>
+<g >
+<title>ntt_common (467,927,040 mult, 0.39%)</title><rect x="613.2" y="37" width="4.6" height="15.0" fill="rgb(248,198,47)" rx="2" ry="2" />
+<text  x="616.18" y="47.5" ></text>
+</g>
+<g >
+<title>basis_convert (80,216,064 mult, 0.07%)</title><rect x="1063.2" y="117" width="0.8" height="15.0" fill="rgb(208,15,3)" rx="2" ry="2" />
+<text  x="1066.24" y="127.5" ></text>
+</g>
+<g >
+<title>compute_phi (10,223,616 mult, 0.01%)</title><rect x="1033.0" y="101" width="0.1" height="15.0" fill="rgb(234,135,32)" rx="2" ry="2" />
+<text  x="1036.02" y="111.5" ></text>
+</g>
+<g >
+<title>intt (18,350,080 mult, 0.02%)</title><rect x="416.2" y="117" width="0.2" height="15.0" fill="rgb(225,96,23)" rx="2" ry="2" />
+<text  x="419.19" y="127.5" ></text>
+</g>
+<g >
+<title>mod_down_divide (421,527,552 mult, 0.35%)</title><rect x="924.2" y="101" width="4.1" height="15.0" fill="rgb(213,38,9)" rx="2" ry="2" />
+<text  x="927.18" y="111.5" ></text>
+</g>
+<g >
+<title>mod_down (6,073,352,192 mult, 5.04%)</title><rect x="149.9" y="85" width="59.4" height="15.0" fill="rgb(240,162,38)" rx="2" ry="2" />
+<text  x="152.86" y="95.5" >mod_down</text>
+</g>
+<g >
+<title>mod_reduce_rescale (482,869,248 mult, 0.40%)</title><rect x="410.3" y="101" width="4.7" height="15.0" fill="rgb(238,153,36)" rx="2" ry="2" />
+<text  x="413.27" y="111.5" ></text>
+</g>
+<g >
+<title>mod_down (898,105,344 mult, 0.74%)</title><rect x="355.6" y="101" width="8.8" height="15.0" fill="rgb(240,162,38)" rx="2" ry="2" />
+<text  x="358.61" y="111.5" ></text>
+</g>
+<g >
+<title>ntt_common (86,900,736 mult, 0.07%)</title><rect x="1033.2" y="101" width="0.8" height="15.0" fill="rgb(248,198,47)" rx="2" ry="2" />
+<text  x="1036.17" y="111.5" ></text>
+</g>
+<g >
+<title>ntt_common (200,540,160 mult, 0.17%)</title><rect x="1039.0" y="85" width="2.0" height="15.0" fill="rgb(248,198,47)" rx="2" ry="2" />
+<text  x="1042.04" y="95.5" ></text>
+</g>
+<g >
+<title>ntt_common (577,110,016 mult, 0.48%)</title><rect x="651.7" y="53" width="5.6" height="15.0" fill="rgb(248,198,47)" rx="2" ry="2" />
+<text  x="654.70" y="63.5" ></text>
+</g>
+<g >
+<title>compute_tf (22,020,096 mult, 0.02%)</title><rect x="406.4" y="53" width="0.2" height="15.0" fill="rgb(249,206,49)" rx="2" ry="2" />
+<text  x="409.39" y="63.5" ></text>
+</g>
+<g >
+<title>key_switch_hoisting (14,860,419,072 mult, 12.32%)</title><rect x="722.7" y="117" width="145.3" height="15.0" fill="rgb(246,191,45)" rx="2" ry="2" />
+<text  x="725.67" y="127.5" >key_switch_hoisting</text>
+</g>
+<g >
+<title>coeff_to_slot (28,923,789,312 mult, 23.98%)</title><rect x="10.0" y="165" width="283.0" height="15.0" fill="rgb(235,142,34)" rx="2" ry="2" />
+<text  x="13.00" y="175.5" >coeff_to_slot</text>
+</g>
+<g >
+<title>ntt_common (240,648,192 mult, 0.20%)</title><rect x="304.0" y="53" width="2.3" height="15.0" fill="rgb(248,198,47)" rx="2" ry="2" />
+<text  x="306.98" y="63.5" ></text>
+</g>
+<g >
+<title>mod_reduce_rescale (319,291,392 mult, 0.26%)</title><rect x="28.4" y="117" width="3.1" height="15.0" fill="rgb(238,153,36)" rx="2" ry="2" />
+<text  x="31.38" y="127.5" ></text>
+</g>
+<g >
+<title>compute_phi (16,777,216 mult, 0.01%)</title><rect x="404.3" y="53" width="0.2" height="15.0" fill="rgb(234,135,32)" rx="2" ry="2" />
+<text  x="407.32" y="63.5" ></text>
+</g>
+<g >
+<title>mod_down_divide (54,001,664 mult, 0.04%)</title><rect x="316.7" y="85" width="0.5" height="15.0" fill="rgb(213,38,9)" rx="2" ry="2" />
+<text  x="319.68" y="95.5" ></text>
+</g>
+<g >
+<title>logistic_regression (51,955,105,792 mult, 43.07%)</title><rect x="681.7" y="181" width="508.3" height="15.0" fill="rgb(246,191,45)" rx="2" ry="2" />
+<text  x="684.74" y="191.5" >logistic_regression</text>
+</g>
+<g >
+<title>mult (566,231,040 mult, 0.47%)</title><rect x="1047.9" y="101" width="5.6" height="15.0" fill="rgb(206,7,1)" rx="2" ry="2" />
+<text  x="1050.93" y="111.5" ></text>
+</g>
+<g >
+<title>compute_tf (22,413,312 mult, 0.02%)</title><rect x="24.4" y="69" width="0.3" height="15.0" fill="rgb(249,206,49)" rx="2" ry="2" />
+<text  x="27.43" y="79.5" ></text>
+</g>
+<g >
+<title>basis_convert (4,838,129,664 mult, 4.01%)</title><rect x="727.2" y="85" width="47.3" height="15.0" fill="rgb(208,15,3)" rx="2" ry="2" />
+<text  x="730.17" y="95.5" >basi..</text>
+</g>
+<g >
+<title>intt (15,728,640 mult, 0.01%)</title><rect x="332.1" y="85" width="0.1" height="15.0" fill="rgb(225,96,23)" rx="2" ry="2" />
+<text  x="335.07" y="95.5" ></text>
+</g>
+<g >
+<title>multiply_plain (1,641,283,584 mult, 1.36%)</title><rect x="525.2" y="117" width="16.1" height="15.0" fill="rgb(225,92,22)" rx="2" ry="2" />
+<text  x="528.22" y="127.5" ></text>
+</g>
+<g >
+<title>ntt (2,123,366,400 mult, 1.76%)</title><rect x="188.5" y="53" width="20.8" height="15.0" fill="rgb(254,226,54)" rx="2" ry="2" />
+<text  x="191.50" y="63.5" ></text>
+</g>
+<g >
+<title>slot_to_coeff (16,921,001,984 mult, 14.03%)</title><rect x="516.2" y="165" width="165.5" height="15.0" fill="rgb(235,142,34)" rx="2" ry="2" />
+<text  x="519.21" y="175.5" >slot_to_coeff</text>
+</g>
+<g >
+<title>compute_phi (89,653,248 mult, 0.07%)</title><rect x="691.3" y="69" width="0.9" height="15.0" fill="rgb(234,135,32)" rx="2" ry="2" />
+<text  x="694.33" y="79.5" ></text>
+</g>
+<g >
+<title>multiply_plain (594,542,592 mult, 0.49%)</title><rect x="591.2" y="69" width="5.8" height="15.0" fill="rgb(225,92,22)" rx="2" ry="2" />
+<text  x="594.23" y="79.5" ></text>
+</g>
+<g >
+<title>multiply (9,532,080,128 mult, 7.90%)</title><rect x="421.8" y="133" width="93.3" height="15.0" fill="rgb(225,94,22)" rx="2" ry="2" />
+<text  x="424.83" y="143.5" >multiply</text>
+</g>
+<g >
+<title>intt (298,844,160 mult, 0.25%)</title><rect x="688.4" y="85" width="2.9" height="15.0" fill="rgb(225,96,23)" rx="2" ry="2" />
+<text  x="691.40" y="95.5" ></text>
+</g>
+<g >
+<title>mod_down (1,307,574,272 mult, 1.08%)</title><rect x="702.4" y="117" width="12.8" height="15.0" fill="rgb(240,162,38)" rx="2" ry="2" />
+<text  x="705.44" y="127.5" ></text>
+</g>
+<g >
+<title>ntt (1,785,200,640 mult, 1.48%)</title><rect x="448.4" y="85" width="17.5" height="15.0" fill="rgb(254,226,54)" rx="2" ry="2" />
+<text  x="451.40" y="95.5" ></text>
+</g>
+<g >
+<title>key_switch_inner_product (594,542,592 mult, 0.49%)</title><rect x="591.2" y="85" width="5.8" height="15.0" fill="rgb(240,163,39)" rx="2" ry="2" />
+<text  x="594.23" y="95.5" ></text>
+</g>
+<g >
+<title>ntt (7,266,631,680 mult, 6.02%)</title><rect x="797.0" y="85" width="71.0" height="15.0" fill="rgb(254,226,54)" rx="2" ry="2" />
+<text  x="799.96" y="95.5" >ntt</text>
+</g>
+<g >
+<title>compute_phi (96,206,848 mult, 0.08%)</title><rect x="247.5" y="53" width="1.0" height="15.0" fill="rgb(234,135,32)" rx="2" ry="2" />
+<text  x="250.51" y="63.5" ></text>
+</g>
+<g >
+<title>key_switch_inner_product (5,737,807,872 mult, 4.76%)</title><rect x="868.0" y="117" width="56.2" height="15.0" fill="rgb(240,163,39)" rx="2" ry="2" />
+<text  x="871.05" y="127.5" >key_s..</text>
+</g>
+<g >
+<title>ntt_common (193,855,488 mult, 0.16%)</title><rect x="388.8" y="53" width="1.8" height="15.0" fill="rgb(248,198,47)" rx="2" ry="2" />
+<text  x="391.75" y="63.5" ></text>
+</g>
+<g >
+<title>mult (28,311,552 mult, 0.02%)</title><rect x="721.3" y="117" width="0.3" height="15.0" fill="rgb(206,7,1)" rx="2" ry="2" />
+<text  x="724.29" y="127.5" ></text>
+</g>
+<g >
+<title>ntt (558,366,720 mult, 0.46%)</title><rect x="416.4" y="117" width="5.4" height="15.0" fill="rgb(254,226,54)" rx="2" ry="2" />
+<text  x="419.37" y="127.5" ></text>
+</g>
+<g >
+<title>ntt_common (31,195,136 mult, 0.03%)</title><rect x="502.2" y="85" width="0.3" height="15.0" fill="rgb(248,198,47)" rx="2" ry="2" />
+<text  x="505.16" y="95.5" ></text>
+</g>
+<g >
+<title>compute_tf (22,020,096 mult, 0.02%)</title><rect x="1059.2" y="85" width="0.2" height="15.0" fill="rgb(249,206,49)" rx="2" ry="2" />
+<text  x="1062.15" y="95.5" ></text>
+</g>
+<g >
+<title>compute_phi (14,942,208 mult, 0.01%)</title><rect x="22.5" y="69" width="0.2" height="15.0" fill="rgb(234,135,32)" rx="2" ry="2" />
+<text  x="25.53" y="79.5" ></text>
+</g>
+<g >
+<title>compute_phi (22,806,528 mult, 0.02%)</title><rect x="388.4" y="53" width="0.2" height="15.0" fill="rgb(234,135,32)" rx="2" ry="2" />
+<text  x="391.42" y="63.5" ></text>
+</g>
+<g >
+<title>mult (2,437,152,768 mult, 2.02%)</title><rect x="31.5" y="101" width="23.8" height="15.0" fill="rgb(206,7,1)" rx="2" ry="2" />
+<text  x="34.50" y="111.5" >m..</text>
+</g>
+<g >
+<title>ntt (440,401,920 mult, 0.37%)</title><rect x="1058.7" y="101" width="4.3" height="15.0" fill="rgb(254,226,54)" rx="2" ry="2" />
+<text  x="1061.72" y="111.5" ></text>
+</g>
+<g >
+<title>mod_raise (8,572,895,232 mult, 7.11%)</title><rect x="57.5" y="69" width="83.8" height="15.0" fill="rgb(246,188,45)" rx="2" ry="2" />
+<text  x="60.47" y="79.5" >mod_raise</text>
+</g>
+<g >
+<title>ntt_common (147,062,784 mult, 0.12%)</title><rect x="347.8" y="53" width="1.5" height="15.0" fill="rgb(248,198,47)" rx="2" ry="2" />
+<text  x="350.83" y="63.5" ></text>
+</g>
+<g >
+<title>ntt (2,610,954,240 mult, 2.16%)</title><rect x="256.9" y="69" width="25.6" height="15.0" fill="rgb(254,226,54)" rx="2" ry="2" />
+<text  x="259.92" y="79.5" >ntt</text>
+</g>
+<g >
+<title>compute_phi (212,336,640 mult, 0.18%)</title><rect x="188.5" y="37" width="2.1" height="15.0" fill="rgb(234,135,32)" rx="2" ry="2" />
+<text  x="191.50" y="47.5" ></text>
+</g>
+<g >
+<title>mod_reduce_rescale (120,324,096 mult, 0.10%)</title><rect x="1032.8" y="133" width="1.2" height="15.0" fill="rgb(238,153,36)" rx="2" ry="2" />
+<text  x="1035.84" y="143.5" ></text>
+</g>
+<g >
+<title>eval_sine (22,821,470,208 mult, 18.92%)</title><rect x="293.0" y="165" width="223.2" height="15.0" fill="rgb(226,99,23)" rx="2" ry="2" />
+<text  x="295.95" y="175.5" >eval_sine</text>
+</g>
+<g >
+<title>ntt (2,233,466,880 mult, 1.85%)</title><rect x="569.4" y="53" width="21.8" height="15.0" fill="rgb(254,226,54)" rx="2" ry="2" />
+<text  x="572.38" y="63.5" >ntt</text>
+</g>
+<g >
+<title>mult (176,160,768 mult, 0.15%)</title><rect x="631.8" y="69" width="1.7" height="15.0" fill="rgb(206,7,1)" rx="2" ry="2" />
+<text  x="634.76" y="79.5" ></text>
+</g>
+<g >
+<title>mult (54,001,664 mult, 0.04%)</title><rect x="316.7" y="69" width="0.5" height="15.0" fill="rgb(206,7,1)" rx="2" ry="2" />
+<text  x="319.68" y="79.5" ></text>
+</g>
+<g >
+<title>ntt_common (2,246,049,792 mult, 1.86%)</title><rect x="1102.1" y="69" width="22.0" height="15.0" fill="rgb(248,198,47)" rx="2" ry="2" />
+<text  x="1105.10" y="79.5" >n..</text>
+</g>
+<g >
+<title>compute_phi (78,118,912 mult, 0.06%)</title><rect x="180.9" y="37" width="0.7" height="15.0" fill="rgb(234,135,32)" rx="2" ry="2" />
+<text  x="183.86" y="47.5" ></text>
+</g>
+<g >
+<title>compute_phi (17,301,504 mult, 0.01%)</title><rect x="347.6" y="53" width="0.1" height="15.0" fill="rgb(234,135,32)" rx="2" ry="2" />
+<text  x="350.58" y="63.5" ></text>
+</g>
+<g >
+<title>compute_phi (12,582,912 mult, 0.01%)</title><rect x="359.9" y="53" width="0.2" height="15.0" fill="rgb(234,135,32)" rx="2" ry="2" />
+<text  x="362.94" y="63.5" ></text>
+</g>
+<g >
+<title>ntt (1,761,607,680 mult, 1.46%)</title><rect x="657.3" y="69" width="17.3" height="15.0" fill="rgb(254,226,54)" rx="2" ry="2" />
+<text  x="660.34" y="79.5" ></text>
+</g>
+<g >
+<title>mod_down_divide (115,343,360 mult, 0.10%)</title><rect x="470.5" y="101" width="1.2" height="15.0" fill="rgb(213,38,9)" rx="2" ry="2" />
+<text  x="473.53" y="111.5" ></text>
+</g>
+<g >
+<title>compute_phi (143,130,624 mult, 0.12%)</title><rect x="617.8" y="37" width="1.4" height="15.0" fill="rgb(234,135,32)" rx="2" ry="2" />
+<text  x="620.76" y="47.5" ></text>
+</g>
+<g >
+<title>ntt_common (28,966,912 mult, 0.02%)</title><rect x="15.4" y="53" width="0.2" height="15.0" fill="rgb(248,198,47)" rx="2" ry="2" />
+<text  x="18.36" y="63.5" ></text>
+</g>
+<g >
+<title>ntt_common (360,972,288 mult, 0.30%)</title><rect x="411.5" y="69" width="3.5" height="15.0" fill="rgb(248,198,47)" rx="2" ry="2" />
+<text  x="414.46" y="79.5" ></text>
+</g>
+<g >
+<title>mod_reduce_rescale (632,553,472 mult, 0.52%)</title><rect x="415.6" y="133" width="6.2" height="15.0" fill="rgb(238,153,36)" rx="2" ry="2" />
+<text  x="418.64" y="143.5" ></text>
+</g>
+<g >
+<title>mod_reduce_rescale (1,824,522,240 mult, 1.51%)</title><rect x="1168.5" y="117" width="17.9" height="15.0" fill="rgb(238,153,36)" rx="2" ry="2" />
+<text  x="1171.54" y="127.5" ></text>
+</g>
+<g >
+<title>mod_raise (1,180,827,648 mult, 0.98%)</title><rect x="16.8" y="101" width="11.6" height="15.0" fill="rgb(246,188,45)" rx="2" ry="2" />
+<text  x="19.83" y="111.5" ></text>
+</g>
+<g >
+<title>ntt_common (1,804,861,440 mult, 1.50%)</title><rect x="191.6" y="37" width="17.7" height="15.0" fill="rgb(248,198,47)" rx="2" ry="2" />
+<text  x="194.62" y="47.5" ></text>
+</g>
+<g >
+<title>compute_phi (28,311,552 mult, 0.02%)</title><rect x="1067.4" y="101" width="0.3" height="15.0" fill="rgb(234,135,32)" rx="2" ry="2" />
+<text  x="1070.38" y="111.5" ></text>
+</g>
+<g >
+<title>mod_down_divide (44,040,192 mult, 0.04%)</title><rect x="399.1" y="85" width="0.5" height="15.0" fill="rgb(213,38,9)" rx="2" ry="2" />
+<text  x="402.13" y="95.5" ></text>
+</g>
+<g >
+<title>multiply_plain (566,231,040 mult, 0.47%)</title><rect x="1047.9" y="117" width="5.6" height="15.0" fill="rgb(225,92,22)" rx="2" ry="2" />
+<text  x="1050.93" y="127.5" ></text>
+</g>
+<g >
+<title>intt (94,371,840 mult, 0.08%)</title><rect x="1170.1" y="101" width="0.9" height="15.0" fill="rgb(225,96,23)" rx="2" ry="2" />
+<text  x="1173.07" y="111.5" ></text>
+</g>
+<g >
+<title>compute_phi (115,343,360 mult, 0.10%)</title><rect x="489.7" y="69" width="1.2" height="15.0" fill="rgb(234,135,32)" rx="2" ry="2" />
+<text  x="492.73" y="79.5" ></text>
+</g>
+<g >
+<title>mod_down_reduce (10,280,239,104 mult, 8.52%)</title><rect x="928.3" y="101" width="100.6" height="15.0" fill="rgb(244,179,42)" rx="2" ry="2" />
+<text  x="931.30" y="111.5" >mod_down_red..</text>
+</g>
+<g >
+<title>basis_convert (174,587,904 mult, 0.14%)</title><rect x="10.1" y="69" width="1.7" height="15.0" fill="rgb(208,15,3)" rx="2" ry="2" />
+<text  x="13.09" y="79.5" ></text>
+</g>
+<g >
+<title>compute_tf (89,260,032 mult, 0.07%)</title><rect x="450.1" y="69" width="0.9" height="15.0" fill="rgb(249,206,49)" rx="2" ry="2" />
+<text  x="453.15" y="79.5" ></text>
+</g>
+<g >
+<title>compute_tf (14,155,776 mult, 0.01%)</title><rect x="1067.7" y="101" width="0.1" height="15.0" fill="rgb(249,206,49)" rx="2" ry="2" />
+<text  x="1070.66" y="111.5" ></text>
+</g>
+<g >
+<title>compute_phi (54,001,664 mult, 0.04%)</title><rect x="326.3" y="53" width="0.5" height="15.0" fill="rgb(234,135,32)" rx="2" ry="2" />
+<text  x="329.27" y="63.5" ></text>
+</g>
+<g >
+<title>mult (37,748,736 mult, 0.03%)</title><rect x="13.6" y="69" width="0.4" height="15.0" fill="rgb(206,7,1)" rx="2" ry="2" />
+<text  x="16.65" y="79.5" ></text>
+</g>
+<g >
+<title>compute_tf (114,819,072 mult, 0.10%)</title><rect x="776.7" y="69" width="1.2" height="15.0" fill="rgb(249,206,49)" rx="2" ry="2" />
+<text  x="779.74" y="79.5" ></text>
+</g>
+<g >
+<title>tree_up (10,279,976,960 mult, 8.52%)</title><rect x="415.6" y="149" width="100.6" height="15.0" fill="rgb(229,114,27)" rx="2" ry="2" />
+<text  x="418.64" y="159.5" >tree_up</text>
+</g>
+<g >
+<title>rotate_sum (31,517,048,832 mult, 26.13%)</title><rect x="722.7" y="133" width="308.3" height="15.0" fill="rgb(215,49,11)" rx="2" ry="2" />
+<text  x="725.67" y="143.5" >rotate_sum</text>
+</g>
+<g >
+<title>ntt (102,236,160 mult, 0.08%)</title><rect x="1033.0" y="117" width="1.0" height="15.0" fill="rgb(254,226,54)" rx="2" ry="2" />
+<text  x="1036.02" y="127.5" ></text>
+</g>
+<g >
+<title>intt (47,185,920 mult, 0.04%)</title><rect x="11.8" y="69" width="0.5" height="15.0" fill="rgb(225,96,23)" rx="2" ry="2" />
+<text  x="14.80" y="79.5" ></text>
+</g>
+<g >
+<title>compute_phi (73,924,608 mult, 0.06%)</title><rect x="562.1" y="37" width="0.8" height="15.0" fill="rgb(234,135,32)" rx="2" ry="2" />
+<text  x="565.15" y="47.5" ></text>
+</g>
+<g >
+<title>ntt_common (922,484,736 mult, 0.76%)</title><rect x="100.3" y="37" width="9.0" height="15.0" fill="rgb(248,198,47)" rx="2" ry="2" />
+<text  x="103.31" y="47.5" ></text>
+</g>
+<g >
+<title>ntt_common (508,035,072 mult, 0.42%)</title><rect x="443.4" y="69" width="5.0" height="15.0" fill="rgb(248,198,47)" rx="2" ry="2" />
+<text  x="446.43" y="79.5" ></text>
+</g>
+<g >
+<title>mult (119,537,664 mult, 0.10%)</title><rect x="1188.8" y="117" width="1.2" height="15.0" fill="rgb(206,7,1)" rx="2" ry="2" />
+<text  x="1191.83" y="127.5" ></text>
+</g>
+<g >
+<title>intt (31,457,280 mult, 0.03%)</title><rect x="715.7" y="101" width="0.4" height="15.0" fill="rgb(225,96,23)" rx="2" ry="2" />
+<text  x="718.75" y="111.5" ></text>
+</g>
+<g >
+<title>compute_phi (178,520,064 mult, 0.15%)</title><rect x="448.4" y="69" width="1.7" height="15.0" fill="rgb(234,135,32)" rx="2" ry="2" />
+<text  x="451.40" y="79.5" ></text>
+</g>
+<g >
+<title>ntt_common (2,780,823,552 mult, 2.31%)</title><rect x="114.1" y="37" width="27.2" height="15.0" fill="rgb(248,198,47)" rx="2" ry="2" />
+<text  x="117.13" y="47.5" >n..</text>
+</g>
+<g >
+<title>compute_phi (229,638,144 mult, 0.19%)</title><rect x="774.5" y="69" width="2.2" height="15.0" fill="rgb(234,135,32)" rx="2" ry="2" />
+<text  x="777.50" y="79.5" ></text>
+</g>
+<g >
+<title>basis_convert (1,028,653,056 mult, 0.85%)</title><rect x="293.5" y="69" width="10.1" height="15.0" fill="rgb(208,15,3)" rx="2" ry="2" />
+<text  x="296.51" y="79.5" ></text>
+</g>
+<g >
+<title>ntt_common (106,954,752 mult, 0.09%)</title><rect x="360.1" y="53" width="1.1" height="15.0" fill="rgb(248,198,47)" rx="2" ry="2" />
+<text  x="363.12" y="63.5" ></text>
+</g>
+<g >
+<title>intt (283,115,520 mult, 0.23%)</title><rect x="303.6" y="69" width="2.7" height="15.0" fill="rgb(225,96,23)" rx="2" ry="2" />
+<text  x="306.57" y="79.5" ></text>
+</g>
+<g >
+<title>compute_tf (28,311,552 mult, 0.02%)</title><rect x="710.2" y="69" width="0.3" height="15.0" fill="rgb(249,206,49)" rx="2" ry="2" />
+<text  x="713.24" y="79.5" ></text>
+</g>
+<g >
+<title>mod_down (3,840,933,888 mult, 3.18%)</title><rect x="1131.0" y="117" width="37.5" height="15.0" fill="rgb(240,162,38)" rx="2" ry="2" />
+<text  x="1133.96" y="127.5" >mod..</text>
+</g>
+<g >
+<title>ntt_common (949,223,424 mult, 0.79%)</title><rect x="504.1" y="85" width="9.3" height="15.0" fill="rgb(248,198,47)" rx="2" ry="2" />
+<text  x="507.10" y="95.5" ></text>
+</g>
+<g >
+<title>compute_tf (48,103,424 mult, 0.04%)</title><rect x="248.5" y="53" width="0.4" height="15.0" fill="rgb(249,206,49)" rx="2" ry="2" />
+<text  x="251.45" y="63.5" ></text>
+</g>
+<g >
+<title>key_switch_hoisting (2,202,009,600 mult, 1.83%)</title><rect x="293.0" y="101" width="21.5" height="15.0" fill="rgb(246,191,45)" rx="2" ry="2" />
+<text  x="295.95" y="111.5" >k..</text>
+</g>
+<g >
+<title>decompose (47,185,920 mult, 0.04%)</title><rect x="1034.2" y="117" width="0.5" height="15.0" fill="rgb(218,62,14)" rx="2" ry="2" />
+<text  x="1037.23" y="127.5" ></text>
+</g>
+<g >
+<title>ntt_common (240,648,192 mult, 0.20%)</title><rect x="1067.8" y="101" width="2.4" height="15.0" fill="rgb(248,198,47)" rx="2" ry="2" />
+<text  x="1070.80" y="111.5" ></text>
+</g>
+<g >
+<title>conj_and_add (668,205,056 mult, 0.55%)</title><rect x="10.0" y="149" width="6.5" height="15.0" fill="rgb(232,126,30)" rx="2" ry="2" />
+<text  x="13.00" y="159.5" ></text>
+</g>
+<g >
+<title>key_switch_inner_product (704,643,072 mult, 0.58%)</title><rect x="1124.1" y="117" width="6.9" height="15.0" fill="rgb(240,163,39)" rx="2" ry="2" />
+<text  x="1127.07" y="127.5" ></text>
+</g>
+<g >
+<title>key_switch_hoisting (1,876,426,752 mult, 1.56%)</title><rect x="681.7" y="117" width="18.4" height="15.0" fill="rgb(246,191,45)" rx="2" ry="2" />
+<text  x="684.74" y="127.5" ></text>
+</g>
+<g >
+<title>compute_phi (53,477,376 mult, 0.04%)</title><rect x="716.1" y="85" width="0.5" height="15.0" fill="rgb(234,135,32)" rx="2" ry="2" />
+<text  x="719.06" y="95.5" ></text>
+</g>
+<g >
+<title>basis_convert (2,956,460,032 mult, 2.45%)</title><rect x="151.9" y="53" width="29.0" height="15.0" fill="rgb(208,15,3)" rx="2" ry="2" />
+<text  x="154.94" y="63.5" >ba..</text>
+</g>
+<g >
+<title>mult (54,001,664 mult, 0.04%)</title><rect x="341.0" y="117" width="0.6" height="15.0" fill="rgb(206,7,1)" rx="2" ry="2" />
+<text  x="344.04" y="127.5" ></text>
+</g>
+<g >
+<title>ntt_common (570,425,344 mult, 0.47%)</title><rect x="370.3" y="101" width="5.6" height="15.0" fill="rgb(248,198,47)" rx="2" ry="2" />
+<text  x="373.27" y="111.5" ></text>
+</g>
+<g >
+<title>compute_tf (14,942,208 mult, 0.01%)</title><rect x="688.7" y="69" width="0.1" height="15.0" fill="rgb(249,206,49)" rx="2" ry="2" />
+<text  x="691.69" y="79.5" ></text>
+</g>
+<g >
+<title>ntt (283,115,520 mult, 0.23%)</title><rect x="1067.4" y="117" width="2.8" height="15.0" fill="rgb(254,226,54)" rx="2" ry="2" />
+<text  x="1070.38" y="127.5" ></text>
+</g>
+<g >
+<title>intt (739,246,080 mult, 0.61%)</title><rect x="562.1" y="53" width="7.3" height="15.0" fill="rgb(225,96,23)" rx="2" ry="2" />
+<text  x="565.15" y="63.5" ></text>
+</g>
+<g >
+<title>basis_convert (3,904,897,024 mult, 3.24%)</title><rect x="928.3" y="85" width="38.2" height="15.0" fill="rgb(208,15,3)" rx="2" ry="2" />
+<text  x="931.30" y="95.5" >bas..</text>
+</g>
+<g >
+<title>mod_raise (685,375,488 mult, 0.57%)</title><rect x="516.4" y="101" width="6.7" height="15.0" fill="rgb(246,188,45)" rx="2" ry="2" />
+<text  x="519.41" y="111.5" ></text>
+</g>
+<g >
+<title>key_switch_inner_product (871,366,656 mult, 0.72%)</title><rect x="141.3" y="85" width="8.6" height="15.0" fill="rgb(240,163,39)" rx="2" ry="2" />
+<text  x="144.34" y="95.5" ></text>
+</g>
+<g >
+<title>mult (44,040,192 mult, 0.04%)</title><rect x="399.1" y="69" width="0.5" height="15.0" fill="rgb(206,7,1)" rx="2" ry="2" />
+<text  x="402.13" y="79.5" ></text>
+</g>
+<g >
+<title>double_multiply (4,619,763,712 mult, 3.83%)</title><rect x="293.0" y="133" width="45.1" height="15.0" fill="rgb(209,21,5)" rx="2" ry="2" />
+<text  x="295.95" y="143.5" >doub..</text>
+</g>
+<g >
+<title>mult (239,075,328 mult, 0.20%)</title><rect x="700.1" y="85" width="2.3" height="15.0" fill="rgb(206,7,1)" rx="2" ry="2" />
+<text  x="703.10" y="95.5" ></text>
+</g>
+<g >
+<title>ntt (4,215,275,520 mult, 3.49%)</title><rect x="987.6" y="85" width="41.3" height="15.0" fill="rgb(254,226,54)" rx="2" ry="2" />
+<text  x="990.64" y="95.5" >ntt</text>
+</g>
+<g >
+<title>ntt (511,180,800 mult, 0.42%)</title><rect x="349.3" y="69" width="5.0" height="15.0" fill="rgb(254,226,54)" rx="2" ry="2" />
+<text  x="352.27" y="79.5" ></text>
+</g>
+<g >
+<title>ntt_common (817,758,208 mult, 0.68%)</title><rect x="248.9" y="53" width="8.0" height="15.0" fill="rgb(248,198,47)" rx="2" ry="2" />
+<text  x="251.92" y="63.5" ></text>
+</g>
+<g >
+<title>mult (1,641,283,584 mult, 1.36%)</title><rect x="525.2" y="101" width="16.1" height="15.0" fill="rgb(206,7,1)" rx="2" ry="2" />
+<text  x="528.22" y="111.5" ></text>
+</g>
+<g >
+<title>intt (681,574,400 mult, 0.57%)</title><rect x="1145.6" y="85" width="6.6" height="15.0" fill="rgb(225,96,23)" rx="2" ry="2" />
+<text  x="1148.56" y="95.5" ></text>
+</g>
+<g >
+<title>key_switch_inner_product (136,839,168 mult, 0.11%)</title><rect x="354.3" y="101" width="1.3" height="15.0" fill="rgb(240,163,39)" rx="2" ry="2" />
+<text  x="357.27" y="111.5" ></text>
+</g>
+<g >
+<title>decompose (176,160,768 mult, 0.15%)</title><rect x="1070.2" y="101" width="1.7" height="15.0" fill="rgb(218,62,14)" rx="2" ry="2" />
+<text  x="1073.15" y="111.5" ></text>
+</g>
+<g >
+<title>ntt_common (1,417,150,464 mult, 1.17%)</title><rect x="1154.7" y="69" width="13.8" height="15.0" fill="rgb(248,198,47)" rx="2" ry="2" />
+<text  x="1157.67" y="79.5" ></text>
+</g>
+<g >
+<title>compute_phi (157,286,400 mult, 0.13%)</title><rect x="1171.0" y="85" width="1.5" height="15.0" fill="rgb(234,135,32)" rx="2" ry="2" />
+<text  x="1174.00" y="95.5" ></text>
+</g>
+<g >
+<title>basis_convert (1,423,441,920 mult, 1.18%)</title><rect x="598.4" y="53" width="14.0" height="15.0" fill="rgb(208,15,3)" rx="2" ry="2" />
+<text  x="601.45" y="63.5" ></text>
+</g>
+<g >
+<title>mod_down_reduce (379,060,224 mult, 0.31%)</title><rect x="1063.2" y="133" width="3.8" height="15.0" fill="rgb(244,179,42)" rx="2" ry="2" />
+<text  x="1066.24" y="143.5" ></text>
+</g>
+<g >
+<title>compute_phi (23,592,960 mult, 0.02%)</title><rect x="1038.7" y="85" width="0.2" height="15.0" fill="rgb(234,135,32)" rx="2" ry="2" />
+<text  x="1041.70" y="95.5" ></text>
+</g>
+<g >
+<title>basis_convert (1,811,939,328 mult, 1.50%)</title><rect x="1071.9" y="85" width="17.7" height="15.0" fill="rgb(208,15,3)" rx="2" ry="2" />
+<text  x="1074.88" y="95.5" ></text>
+</g>
+<g >
+<title>ntt_common (434,503,680 mult, 0.36%)</title><rect x="350.0" y="53" width="4.3" height="15.0" fill="rgb(248,198,47)" rx="2" ry="2" />
+<text  x="353.02" y="63.5" ></text>
+</g>
+<g >
+<title>mult (33,030,144 mult, 0.03%)</title><rect x="355.6" y="69" width="0.3" height="15.0" fill="rgb(206,7,1)" rx="2" ry="2" />
+<text  x="358.61" y="79.5" ></text>
+</g>
+<g >
+<title>ntt (524,288,000 mult, 0.43%)</title><rect x="332.2" y="85" width="5.2" height="15.0" fill="rgb(254,226,54)" rx="2" ry="2" />
+<text  x="335.22" y="95.5" ></text>
+</g>
+<g >
+<title>intt (597,688,320 mult, 0.50%)</title><rect x="442.6" y="85" width="5.8" height="15.0" fill="rgb(225,96,23)" rx="2" ry="2" />
+<text  x="445.56" y="95.5" ></text>
+</g>
+<g >
+<title>mod_down_reduce (3,405,250,560 mult, 2.82%)</title><rect x="598.4" y="69" width="33.4" height="15.0" fill="rgb(244,179,42)" rx="2" ry="2" />
+<text  x="601.45" y="79.5" >mo..</text>
+</g>
+<g >
+<title>mod_raise (2,145,386,496 mult, 1.78%)</title><rect x="293.5" y="85" width="21.0" height="15.0" fill="rgb(246,188,45)" rx="2" ry="2" />
+<text  x="296.51" y="95.5" ></text>
+</g>
+<g >
+<title>ntt_common (474,611,712 mult, 0.39%)</title><rect x="417.2" y="101" width="4.6" height="15.0" fill="rgb(248,198,47)" rx="2" ry="2" />
+<text  x="420.19" y="111.5" ></text>
+</g>
+<g >
+<title>compute_phi (166,723,584 mult, 0.14%)</title><rect x="1152.2" y="69" width="1.7" height="15.0" fill="rgb(234,135,32)" rx="2" ry="2" />
+<text  x="1155.23" y="79.5" ></text>
+</g>
+<g >
+<title>fft_inner_bsgs (16,921,001,984 mult, 14.03%)</title><rect x="516.2" y="133" width="165.5" height="15.0" fill="rgb(246,190,45)" rx="2" ry="2" />
+<text  x="519.21" y="143.5" >fft_inner_bsgs</text>
+</g>
+<g >
+<title>mod_down_divide (44,040,192 mult, 0.04%)</title><rect x="1053.5" y="117" width="0.4" height="15.0" fill="rgb(213,38,9)" rx="2" ry="2" />
+<text  x="1056.47" y="127.5" ></text>
+</g>
+<g >
+<title>intt (10,485,760 mult, 0.01%)</title><rect x="364.7" y="85" width="0.1" height="15.0" fill="rgb(225,96,23)" rx="2" ry="2" />
+<text  x="367.71" y="95.5" ></text>
+</g>
+<g >
+<title>key_switch_inner_product (476,577,792 mult, 0.40%)</title><rect x="465.9" y="117" width="4.6" height="15.0" fill="rgb(240,163,39)" rx="2" ry="2" />
+<text  x="468.87" y="127.5" ></text>
+</g>
+<g >
+<title>mult (83,361,792 mult, 0.07%)</title><rect x="1186.4" y="117" width="0.8" height="15.0" fill="rgb(206,7,1)" rx="2" ry="2" />
+<text  x="1189.38" y="127.5" ></text>
+</g>
+<g >
+<title>partial_multiply_inner (115,343,360 mult, 0.10%)</title><rect x="514.0" y="117" width="1.1" height="15.0" fill="rgb(221,75,17)" rx="2" ry="2" />
+<text  x="516.95" y="127.5" ></text>
+</g>
+<g >
+<title>ntt_common (980,418,560 mult, 0.81%)</title><rect x="491.4" y="69" width="9.6" height="15.0" fill="rgb(248,198,47)" rx="2" ry="2" />
+<text  x="494.42" y="79.5" ></text>
+</g>
+<g >
+<title>compute_tf (44,040,192 mult, 0.04%)</title><rect x="1090.5" y="69" width="0.4" height="15.0" fill="rgb(249,206,49)" rx="2" ry="2" />
+<text  x="1093.46" y="79.5" ></text>
+</g>
+<g >
+<title>ntt (141,557,760 mult, 0.12%)</title><rect x="12.3" y="69" width="1.3" height="15.0" fill="rgb(254,226,54)" rx="2" ry="2" />
+<text  x="15.26" y="79.5" ></text>
+</g>
+<g >
+<title>mult (553,648,128 mult, 0.46%)</title><rect x="375.9" y="117" width="5.4" height="15.0" fill="rgb(206,7,1)" rx="2" ry="2" />
+<text  x="378.85" y="127.5" ></text>
+</g>
+<g >
+<title>mod_down_reduce (5,861,015,552 mult, 4.86%)</title><rect x="151.9" y="69" width="57.4" height="15.0" fill="rgb(244,179,42)" rx="2" ry="2" />
+<text  x="154.94" y="79.5" >mod_do..</text>
+</g>
+<g >
+<title>giant_step_basis (2,745,171,968 mult, 2.28%)</title><rect x="341.6" y="149" width="26.8" height="15.0" fill="rgb(214,41,9)" rx="2" ry="2" />
+<text  x="344.57" y="159.5" >g..</text>
+</g>
+<g >
+<title>ntt_common (77,987,840 mult, 0.06%)</title><rect x="15.8" y="53" width="0.7" height="15.0" fill="rgb(248,198,47)" rx="2" ry="2" />
+<text  x="18.77" y="63.5" ></text>
+</g>
+<g >
+<title>mod_down_reduce (4,200,857,600 mult, 3.48%)</title><rect x="633.5" y="85" width="41.1" height="15.0" fill="rgb(244,179,42)" rx="2" ry="2" />
+<text  x="636.48" y="95.5" >mod..</text>
+</g>
+<g >
+<title>compute_tf (132,120,576 mult, 0.11%)</title><rect x="1100.8" y="69" width="1.3" height="15.0" fill="rgb(249,206,49)" rx="2" ry="2" />
+<text  x="1103.80" y="79.5" ></text>
+</g>
+<g >
+<title>basis_convert (684,982,272 mult, 0.57%)</title><rect x="381.7" y="69" width="6.7" height="15.0" fill="rgb(208,15,3)" rx="2" ry="2" />
+<text  x="384.72" y="79.5" ></text>
+</g>
+<g >
+<title>compute_tf (14,155,776 mult, 0.01%)</title><rect x="303.8" y="53" width="0.2" height="15.0" fill="rgb(249,206,49)" rx="2" ry="2" />
+<text  x="306.85" y="63.5" ></text>
+</g>
+<g >
+<title>basis_convert (1,985,740,800 mult, 1.65%)</title><rect x="542.7" y="53" width="19.4" height="15.0" fill="rgb(208,15,3)" rx="2" ry="2" />
+<text  x="545.72" y="63.5" ></text>
+</g>
+<g >
+<title>compute_phi (68,419,584 mult, 0.06%)</title><rect x="390.6" y="53" width="0.7" height="15.0" fill="rgb(234,135,32)" rx="2" ry="2" />
+<text  x="393.65" y="63.5" ></text>
+</g>
+<g >
+<title>multiply_plain (54,001,664 mult, 0.04%)</title><rect x="341.0" y="133" width="0.6" height="15.0" fill="rgb(225,92,22)" rx="2" ry="2" />
+<text  x="344.04" y="143.5" ></text>
+</g>
+<g >
+<title>compute_tf (35,389,440 mult, 0.03%)</title><rect x="1041.7" y="85" width="0.3" height="15.0" fill="rgb(249,206,49)" rx="2" ry="2" />
+<text  x="1044.70" y="95.5" ></text>
+</g>
+<g >
+<title>key_switch (668,205,056 mult, 0.55%)</title><rect x="10.0" y="117" width="6.5" height="15.0" fill="rgb(223,87,20)" rx="2" ry="2" />
+<text  x="13.00" y="127.5" ></text>
+</g>
+<g >
+<title>ntt (707,788,800 mult, 0.59%)</title><rect x="1041.0" y="101" width="6.9" height="15.0" fill="rgb(254,226,54)" rx="2" ry="2" />
+<text  x="1044.00" y="111.5" ></text>
+</g>
+<g >
+<title>ntt_common (1,898,446,848 mult, 1.57%)</title><rect x="572.7" y="37" width="18.5" height="15.0" fill="rgb(248,198,47)" rx="2" ry="2" />
+<text  x="575.66" y="47.5" ></text>
+</g>
+<g >
+<title>ntt (91,750,400 mult, 0.08%)</title><rect x="15.6" y="69" width="0.9" height="15.0" fill="rgb(254,226,54)" rx="2" ry="2" />
+<text  x="18.64" y="79.5" ></text>
+</g>
+<g >
+<title>mod_down_reduce (3,000,500,224 mult, 2.49%)</title><rect x="471.7" y="101" width="29.3" height="15.0" fill="rgb(244,179,42)" rx="2" ry="2" />
+<text  x="474.66" y="111.5" >mo..</text>
+</g>
+<g >
+<title>mod_down (10,701,766,656 mult, 8.87%)</title><rect x="924.2" y="117" width="104.7" height="15.0" fill="rgb(240,162,38)" rx="2" ry="2" />
+<text  x="927.18" y="127.5" >mod_down</text>
+</g>
+<g >
+<title>key_switch_inner_product (223,346,688 mult, 0.19%)</title><rect x="314.5" y="101" width="2.2" height="15.0" fill="rgb(240,163,39)" rx="2" ry="2" />
+<text  x="317.49" y="111.5" ></text>
+</g>
+<g >
+<title>compute_tf (11,796,480 mult, 0.01%)</title><rect x="1038.9" y="85" width="0.1" height="15.0" fill="rgb(249,206,49)" rx="2" ry="2" />
+<text  x="1041.93" y="95.5" ></text>
+</g>
+<g >
+<title>mod_down (977,272,832 mult, 0.81%)</title><rect x="1053.5" y="133" width="9.5" height="15.0" fill="rgb(240,162,38)" rx="2" ry="2" />
+<text  x="1056.47" y="143.5" ></text>
+</g>
+<g >
+<title>ntt (440,401,920 mult, 0.37%)</title><rect x="406.0" y="69" width="4.3" height="15.0" fill="rgb(254,226,54)" rx="2" ry="2" />
+<text  x="408.96" y="79.5" ></text>
+</g>
+<g >
+<title>compute_phi (70,778,880 mult, 0.06%)</title><rect x="1041.0" y="85" width="0.7" height="15.0" fill="rgb(234,135,32)" rx="2" ry="2" />
+<text  x="1044.00" y="95.5" ></text>
+</g>
+<g >
+<title>mult (704,643,072 mult, 0.58%)</title><rect x="1124.1" y="85" width="6.9" height="15.0" fill="rgb(206,7,1)" rx="2" ry="2" />
+<text  x="1127.07" y="95.5" ></text>
+</g>
+<g >
+<title>mult (22,020,096 mult, 0.02%)</title><rect x="1063.0" y="133" width="0.2" height="15.0" fill="rgb(206,7,1)" rx="2" ry="2" />
+<text  x="1066.03" y="143.5" ></text>
+</g>
+<g >
+<title>ntt (1,153,433,600 mult, 0.96%)</title><rect x="489.7" y="85" width="11.3" height="15.0" fill="rgb(254,226,54)" rx="2" ry="2" />
+<text  x="492.73" y="95.5" ></text>
+</g>
+<g >
+<title>mult (33,030,144 mult, 0.03%)</title><rect x="368.1" y="85" width="0.3" height="15.0" fill="rgb(206,7,1)" rx="2" ry="2" />
+<text  x="371.10" y="95.5" ></text>
+</g>
+<g >
+<title>compute_phi (327,155,712 mult, 0.27%)</title><rect x="109.3" y="37" width="3.2" height="15.0" fill="rgb(234,135,32)" rx="2" ry="2" />
+<text  x="112.33" y="47.5" ></text>
+</g>
+<g >
+<title>mod_raise (1,597,243,392 mult, 1.32%)</title><rect x="381.7" y="85" width="15.6" height="15.0" fill="rgb(246,188,45)" rx="2" ry="2" />
+<text  x="384.72" y="95.5" ></text>
+</g>
+<g >
+<title>multiply_plain (1,071,906,816 mult, 0.89%)</title><rect x="282.5" y="101" width="10.5" height="15.0" fill="rgb(225,92,22)" rx="2" ry="2" />
+<text  x="285.47" y="111.5" ></text>
+</g>
+<g >
+<title>compute_phi (52,428,800 mult, 0.04%)</title><rect x="332.2" y="69" width="0.5" height="15.0" fill="rgb(234,135,32)" rx="2" ry="2" />
+<text  x="335.22" y="79.5" ></text>
+</g>
+<g >
+<title>mult (22,020,096 mult, 0.02%)</title><rect x="415.0" y="101" width="0.2" height="15.0" fill="rgb(206,7,1)" rx="2" ry="2" />
+<text  x="418.00" y="111.5" ></text>
+</g>
+<g >
+<title>fft (28,255,584,256 mult, 23.43%)</title><rect x="16.5" y="149" width="276.5" height="15.0" fill="rgb(246,190,45)" rx="2" ry="2" />
+<text  x="19.54" y="159.5" >fft</text>
+</g>
+<g >
+<title>intt (34,078,720 mult, 0.03%)</title><rect x="15.3" y="69" width="0.3" height="15.0" fill="rgb(225,96,23)" rx="2" ry="2" />
+<text  x="18.31" y="79.5" ></text>
+</g>
+<g >
+<title>intt (230,686,720 mult, 0.19%)</title><rect x="707.4" y="85" width="2.3" height="15.0" fill="rgb(225,96,23)" rx="2" ry="2" />
+<text  x="710.43" y="95.5" ></text>
+</g>
+<g >
+<title>compute_tf (54,263,808 mult, 0.04%)</title><rect x="99.8" y="37" width="0.5" height="15.0" fill="rgb(249,206,49)" rx="2" ry="2" />
+<text  x="102.78" y="47.5" ></text>
+</g>
+<g >
+<title>intt (149,422,080 mult, 0.12%)</title><rect x="22.5" y="85" width="1.5" height="15.0" fill="rgb(225,96,23)" rx="2" ry="2" />
+<text  x="25.53" y="95.5" ></text>
+</g>
+<g >
+<title>basis_convert (583,139,328 mult, 0.48%)</title><rect x="16.8" y="85" width="5.7" height="15.0" fill="rgb(208,15,3)" rx="2" ry="2" />
+<text  x="19.83" y="95.5" ></text>
+</g>
+<g >
+<title>ntt_common (173,801,472 mult, 0.14%)</title><rect x="324.6" y="53" width="1.7" height="15.0" fill="rgb(248,198,47)" rx="2" ry="2" />
+<text  x="327.57" y="63.5" ></text>
+</g>
+<g >
+<title>mod_reduce_rescale (327,155,712 mult, 0.27%)</title><rect x="1067.0" y="133" width="3.2" height="15.0" fill="rgb(238,153,36)" rx="2" ry="2" />
+<text  x="1069.95" y="143.5" ></text>
+</g>
+<g >
+<title>mult (16,515,072 mult, 0.01%)</title><rect x="367.9" y="101" width="0.2" height="15.0" fill="rgb(206,7,1)" rx="2" ry="2" />
+<text  x="370.94" y="111.5" ></text>
+</g>
+<g >
+<title>ntt (1,667,235,840 mult, 1.38%)</title><rect x="1152.2" y="85" width="16.3" height="15.0" fill="rgb(254,226,54)" rx="2" ry="2" />
+<text  x="1155.23" y="95.5" ></text>
+</g>
+<g >
+<title>compute_phi (31,981,568 mult, 0.03%)</title><rect x="364.8" y="69" width="0.3" height="15.0" fill="rgb(234,135,32)" rx="2" ry="2" />
+<text  x="367.81" y="79.5" ></text>
+</g>
+<g >
+<title>mult (182,452,224 mult, 0.15%)</title><rect x="397.3" y="69" width="1.8" height="15.0" fill="rgb(206,7,1)" rx="2" ry="2" />
+<text  x="400.34" y="79.5" ></text>
+</g>
+<g >
+<title>compute_tf (78,643,200 mult, 0.07%)</title><rect x="1172.5" y="85" width="0.8" height="15.0" fill="rgb(249,206,49)" rx="2" ry="2" />
+<text  x="1175.54" y="95.5" ></text>
+</g>
+<g >
+<title>mult (56,623,104 mult, 0.05%)</title><rect x="702.4" y="85" width="0.6" height="15.0" fill="rgb(206,7,1)" rx="2" ry="2" />
+<text  x="705.44" y="95.5" ></text>
+</g>
+<g >
+<title>mult (22,020,096 mult, 0.02%)</title><rect x="1034.0" y="117" width="0.2" height="15.0" fill="rgb(206,7,1)" rx="2" ry="2" />
+<text  x="1037.02" y="127.5" ></text>
+</g>
+<g >
+<title>ntt_common (213,909,504 mult, 0.18%)</title><rect x="1064.9" y="101" width="2.1" height="15.0" fill="rgb(248,198,47)" rx="2" ry="2" />
+<text  x="1067.86" y="111.5" ></text>
+</g>
+<g >
+<title>mult (44,040,192 mult, 0.04%)</title><rect x="415.2" y="85" width="0.4" height="15.0" fill="rgb(206,7,1)" rx="2" ry="2" />
+<text  x="418.21" y="95.5" ></text>
+</g>
+<g >
+<title>basis_convert (47,185,920 mult, 0.04%)</title><rect x="1031.0" y="117" width="0.5" height="15.0" fill="rgb(208,15,3)" rx="2" ry="2" />
+<text  x="1034.00" y="127.5" ></text>
+</g>
+<g >
+<title>mod_down_reduce (7,220,756,480 mult, 5.99%)</title><rect x="211.8" y="85" width="70.7" height="15.0" fill="rgb(244,179,42)" rx="2" ry="2" />
+<text  x="214.83" y="95.5" >mod_dow..</text>
+</g>
+<g >
+<title>basis_convert (454,033,408 mult, 0.38%)</title><rect x="703.0" y="85" width="4.4" height="15.0" fill="rgb(208,15,3)" rx="2" ry="2" />
+<text  x="705.99" y="95.5" ></text>
+</g>
+<g >
+<title>basis_convert (487,063,552 mult, 0.40%)</title><rect x="399.6" y="69" width="4.7" height="15.0" fill="rgb(208,15,3)" rx="2" ry="2" />
+<text  x="402.56" y="79.5" ></text>
+</g>
+<g >
+<title>multiply_plain (37,748,736 mult, 0.03%)</title><rect x="13.6" y="85" width="0.4" height="15.0" fill="rgb(225,92,22)" rx="2" ry="2" />
+<text  x="16.65" y="95.5" ></text>
+</g>
+<g >
+<title>compute_phi (55,050,240 mult, 0.05%)</title><rect x="612.4" y="37" width="0.5" height="15.0" fill="rgb(234,135,32)" rx="2" ry="2" />
+<text  x="615.37" y="47.5" ></text>
+</g>
+<g >
+<title>compute_tf (27,000,832 mult, 0.02%)</title><rect x="326.8" y="53" width="0.3" height="15.0" fill="rgb(249,206,49)" rx="2" ry="2" />
+<text  x="329.80" y="63.5" ></text>
+</g>
+<g >
+<title>mod_down_divide (56,623,104 mult, 0.05%)</title><rect x="702.4" y="101" width="0.6" height="15.0" fill="rgb(213,38,9)" rx="2" ry="2" />
+<text  x="705.44" y="111.5" ></text>
+</g>
+<g >
+<title>ntt (833,617,920 mult, 0.69%)</title><rect x="306.3" y="69" width="8.2" height="15.0" fill="rgb(254,226,54)" rx="2" ry="2" />
+<text  x="309.34" y="79.5" ></text>
+</g>
+<g >
+<title>compute_tf (21,233,664 mult, 0.02%)</title><rect x="411.3" y="69" width="0.2" height="15.0" fill="rgb(249,206,49)" rx="2" ry="2" />
+<text  x="414.26" y="79.5" ></text>
+</g>
+<g >
+<title>compute_phi (55,836,672 mult, 0.05%)</title><rect x="416.4" y="101" width="0.5" height="15.0" fill="rgb(234,135,32)" rx="2" ry="2" />
+<text  x="419.37" y="111.5" ></text>
+</g>
+<g >
+<title>fft_inner_bsgs (28,255,584,256 mult, 23.43%)</title><rect x="16.5" y="133" width="276.5" height="15.0" fill="rgb(246,190,45)" rx="2" ry="2" />
+<text  x="19.54" y="143.5" >fft_inner_bsgs</text>
+</g>
+<g >
+<title>mod_down_reduce (1,250,951,168 mult, 1.04%)</title><rect x="703.0" y="101" width="12.2" height="15.0" fill="rgb(244,179,42)" rx="2" ry="2" />
+<text  x="705.99" y="111.5" ></text>
+</g>
+<g >
+<title>compute_phi (44,040,192 mult, 0.04%)</title><rect x="406.0" y="53" width="0.4" height="15.0" fill="rgb(234,135,32)" rx="2" ry="2" />
+<text  x="408.96" y="63.5" ></text>
+</g>
+<g >
+<title>ntt (3,271,557,120 mult, 2.71%)</title><rect x="109.3" y="53" width="32.0" height="15.0" fill="rgb(254,226,54)" rx="2" ry="2" />
+<text  x="112.33" y="63.5" >ntt</text>
+</g>
+<g >
+<title>key_switch_hoisting (705,822,720 mult, 0.59%)</title><rect x="516.2" y="117" width="6.9" height="15.0" fill="rgb(246,191,45)" rx="2" ry="2" />
+<text  x="519.21" y="127.5" ></text>
+</g>
+<g >
+<title>mult (56,623,104 mult, 0.05%)</title><rect x="722.1" y="117" width="0.6" height="15.0" fill="rgb(206,7,1)" rx="2" ry="2" />
+<text  x="725.12" y="127.5" ></text>
+</g>
+<g >
+<title>intt (550,502,400 mult, 0.46%)</title><rect x="612.4" y="53" width="5.4" height="15.0" fill="rgb(225,96,23)" rx="2" ry="2" />
+<text  x="615.37" y="63.5" ></text>
+</g>
+<g >
+<title>compute_phi (42,467,328 mult, 0.04%)</title><rect x="410.8" y="69" width="0.5" height="15.0" fill="rgb(234,135,32)" rx="2" ry="2" />
+<text  x="413.84" y="79.5" ></text>
+</g>
+<g >
+<title>ntt (684,195,840 mult, 0.57%)</title><rect x="390.6" y="69" width="6.7" height="15.0" fill="rgb(254,226,54)" rx="2" ry="2" />
+<text  x="393.65" y="79.5" ></text>
+</g>
+<g >
+<title>compute_tf (210,763,776 mult, 0.17%)</title><rect x="991.8" y="69" width="2.0" height="15.0" fill="rgb(249,206,49)" rx="2" ry="2" />
+<text  x="994.76" y="79.5" ></text>
+</g>
+<g >
+<title>ntt_common (579,338,240 mult, 0.48%)</title><rect x="1146.6" y="69" width="5.6" height="15.0" fill="rgb(248,198,47)" rx="2" ry="2" />
+<text  x="1149.56" y="79.5" ></text>
+</g>
+<g >
+<title>key_switch_inner_product (566,231,040 mult, 0.47%)</title><rect x="1047.9" y="133" width="5.6" height="15.0" fill="rgb(240,163,39)" rx="2" ry="2" />
+<text  x="1050.93" y="143.5" ></text>
+</g>
+<g >
+<title>compute_tf (26,214,400 mult, 0.02%)</title><rect x="332.7" y="69" width="0.3" height="15.0" fill="rgb(249,206,49)" rx="2" ry="2" />
+<text  x="335.74" y="79.5" ></text>
+</g>
+<g >
+<title>mod_down_reduce (248,512,512 mult, 0.21%)</title><rect x="14.1" y="85" width="2.4" height="15.0" fill="rgb(244,179,42)" rx="2" ry="2" />
+<text  x="17.11" y="95.5" ></text>
+</g>
+<g >
+<title>mod_reduce_rescale (759,169,024 mult, 0.63%)</title><rect x="368.4" y="133" width="7.5" height="15.0" fill="rgb(238,153,36)" rx="2" ry="2" />
+<text  x="371.43" y="143.5" ></text>
+</g>
+<g >
+<title>bootstrap (68,666,261,504 mult, 56.93%)</title><rect x="10.0" y="181" width="671.7" height="15.0" fill="rgb(218,60,14)" rx="2" ry="2" />
+<text  x="13.00" y="191.5" >bootstrap</text>
+</g>
+<g >
+<title>intt (1,085,276,160 mult, 0.90%)</title><rect x="98.7" y="53" width="10.6" height="15.0" fill="rgb(225,96,23)" rx="2" ry="2" />
+<text  x="101.71" y="63.5" ></text>
+</g>
+<g >
+<title>compute_tf (39,059,456 mult, 0.03%)</title><rect x="181.6" y="37" width="0.4" height="15.0" fill="rgb(249,206,49)" rx="2" ry="2" />
+<text  x="184.62" y="47.5" ></text>
+</g>
+<g >
+<title>compute_phi (14,155,776 mult, 0.01%)</title><rect x="12.3" y="53" width="0.1" height="15.0" fill="rgb(234,135,32)" rx="2" ry="2" />
+<text  x="15.26" y="63.5" ></text>
+</g>
+<g >
+<title>intt (228,065,280 mult, 0.19%)</title><rect x="388.4" y="69" width="2.2" height="15.0" fill="rgb(225,96,23)" rx="2" ry="2" />
+<text  x="391.42" y="79.5" ></text>
+</g>
+<g >
+<title>mod_down (3,115,843,584 mult, 2.58%)</title><rect x="470.5" y="117" width="30.5" height="15.0" fill="rgb(240,162,38)" rx="2" ry="2" />
+<text  x="473.53" y="127.5" >mo..</text>
+</g>
+<g >
+<title>ntt (540,016,640 mult, 0.45%)</title><rect x="326.3" y="69" width="5.3" height="15.0" fill="rgb(254,226,54)" rx="2" ry="2" />
+<text  x="329.27" y="79.5" ></text>
+</g>
+<g >
+<title>ntt_common (664,010,752 mult, 0.55%)</title><rect x="182.0" y="37" width="6.5" height="15.0" fill="rgb(248,198,47)" rx="2" ry="2" />
+<text  x="185.01" y="47.5" ></text>
+</g>
+<g >
+<title>compute_tf (36,962,304 mult, 0.03%)</title><rect x="562.9" y="37" width="0.3" height="15.0" fill="rgb(249,206,49)" rx="2" ry="2" />
+<text  x="565.87" y="47.5" ></text>
+</g>
+<g >
+<title>multiply_plain (119,537,664 mult, 0.10%)</title><rect x="1188.8" y="133" width="1.2" height="15.0" fill="rgb(225,92,22)" rx="2" ry="2" />
+<text  x="1191.83" y="143.5" ></text>
+</g>
+<g >
+<title>basis_convert (621,281,280 mult, 0.52%)</title><rect x="682.3" y="85" width="6.1" height="15.0" fill="rgb(208,15,3)" rx="2" ry="2" />
+<text  x="685.32" y="95.5" ></text>
+</g>
+<g >
+<title>ntt (448,266,240 mult, 0.37%)</title><rect x="24.0" y="85" width="4.4" height="15.0" fill="rgb(254,226,54)" rx="2" ry="2" />
+<text  x="27.00" y="95.5" ></text>
+</g>
+<g >
+<title>intt (235,929,600 mult, 0.20%)</title><rect x="1038.7" y="101" width="2.3" height="15.0" fill="rgb(225,96,23)" rx="2" ry="2" />
+<text  x="1041.70" y="111.5" ></text>
+</g>
+<g >
+<title>ntt_common (1,497,366,528 mult, 1.24%)</title><rect x="659.9" y="53" width="14.7" height="15.0" fill="rgb(248,198,47)" rx="2" ry="2" />
+<text  x="662.93" y="63.5" ></text>
+</g>
+<g >
+<title>compute_phi (44,040,192 mult, 0.04%)</title><rect x="1058.7" y="85" width="0.5" height="15.0" fill="rgb(234,135,32)" rx="2" ry="2" />
+<text  x="1061.72" y="95.5" ></text>
+</g>
+<g >
+<title>basis_convert (1,325,400,064 mult, 1.10%)</title><rect x="1132.6" y="85" width="13.0" height="15.0" fill="rgb(208,15,3)" rx="2" ry="2" />
+<text  x="1135.59" y="95.5" ></text>
+</g>
+<g >
+<title>mod_reduce_rescale (1,265,106,944 mult, 1.05%)</title><rect x="501.0" y="117" width="12.4" height="15.0" fill="rgb(238,153,36)" rx="2" ry="2" />
+<text  x="504.01" y="127.5" ></text>
+</g>
+<g >
+<title>ntt_common (1,336,934,400 mult, 1.11%)</title><rect x="1173.3" y="85" width="13.1" height="15.0" fill="rgb(248,198,47)" rx="2" ry="2" />
+<text  x="1176.31" y="95.5" ></text>
+</g>
+<g >
+<title>compute_phi (18,874,368 mult, 0.02%)</title><rect x="523.4" y="85" width="0.2" height="15.0" fill="rgb(234,135,32)" rx="2" ry="2" />
+<text  x="526.37" y="95.5" ></text>
+</g>
+<g >
+<title>mod_reduce_rescale (592,445,440 mult, 0.49%)</title><rect x="331.6" y="101" width="5.8" height="15.0" fill="rgb(238,153,36)" rx="2" ry="2" />
+<text  x="334.56" y="111.5" ></text>
+</g>
+<g >
+<title>ntt_common (17,825,792 mult, 0.01%)</title><rect x="369.1" y="101" width="0.2" height="15.0" fill="rgb(248,198,47)" rx="2" ry="2" />
+<text  x="372.11" y="111.5" ></text>
+</g>
+<g >
+<title>mult (212,336,640 mult, 0.18%)</title><rect x="149.9" y="53" width="2.0" height="15.0" fill="rgb(206,7,1)" rx="2" ry="2" />
+<text  x="152.86" y="63.5" ></text>
+</g>
+<g >
+<title>mod_reduce_rescale (362,283,008 mult, 0.30%)</title><rect x="364.4" y="101" width="3.5" height="15.0" fill="rgb(238,153,36)" rx="2" ry="2" />
+<text  x="367.40" y="111.5" ></text>
+</g>
+<g >
+<title>key_switch_inner_product (37,748,736 mult, 0.03%)</title><rect x="13.6" y="101" width="0.4" height="15.0" fill="rgb(240,163,39)" rx="2" ry="2" />
+<text  x="16.65" y="111.5" ></text>
+</g>
+<g >
+<title>basis_convert (579,600,384 mult, 0.48%)</title><rect x="341.9" y="69" width="5.7" height="15.0" fill="rgb(208,15,3)" rx="2" ry="2" />
+<text  x="344.91" y="79.5" ></text>
+</g>
+<g >
+<title>mod_reduce_rescale (296,222,720 mult, 0.25%)</title><rect x="338.1" y="133" width="2.9" height="15.0" fill="rgb(238,153,36)" rx="2" ry="2" />
+<text  x="341.15" y="143.5" ></text>
+</g>
+<g >
+<title>basis_convert (1,999,110,144 mult, 1.66%)</title><rect x="423.0" y="85" width="19.6" height="15.0" fill="rgb(208,15,3)" rx="2" ry="2" />
+<text  x="426.00" y="95.5" ></text>
+</g>
+<g >
+<title>mod_down_divide (33,030,144 mult, 0.03%)</title><rect x="355.6" y="85" width="0.3" height="15.0" fill="rgb(213,38,9)" rx="2" ry="2" />
+<text  x="358.61" y="95.5" ></text>
+</g>
+<g >
+<title>compute_tf (163,577,856 mult, 0.14%)</title><rect x="112.5" y="37" width="1.6" height="15.0" fill="rgb(249,206,49)" rx="2" ry="2" />
+<text  x="115.53" y="47.5" ></text>
+</g>
+<g >
+<title>ntt_common (260,702,208 mult, 0.22%)</title><rect x="520.6" y="69" width="2.5" height="15.0" fill="rgb(248,198,47)" rx="2" ry="2" />
+<text  x="523.56" y="79.5" ></text>
+</g>
+<g >
+<title>key_switch (15,734,669,312 mult, 13.04%)</title><rect x="55.3" y="101" width="154.0" height="15.0" fill="rgb(223,87,20)" rx="2" ry="2" />
+<text  x="58.35" y="111.5" >key_switch</text>
+</g>
+<g >
+<title>compute_phi (51,118,080 mult, 0.04%)</title><rect x="349.3" y="53" width="0.5" height="15.0" fill="rgb(234,135,32)" rx="2" ry="2" />
+<text  x="352.27" y="63.5" ></text>
+</g>
+<g >
+<title>mod_down (7,481,851,904 mult, 6.20%)</title><rect x="209.3" y="101" width="73.2" height="15.0" fill="rgb(240,162,38)" rx="2" ry="2" />
+<text  x="212.27" y="111.5" >mod_down</text>
+</g>
+<g >
+<title>mod_raise (363,331,584 mult, 0.30%)</title><rect x="10.1" y="85" width="3.5" height="15.0" fill="rgb(246,188,45)" rx="2" ry="2" />
+<text  x="13.09" y="95.5" ></text>
+</g>
+<g >
+<title>mult (1,071,906,816 mult, 0.89%)</title><rect x="282.5" y="85" width="10.5" height="15.0" fill="rgb(206,7,1)" rx="2" ry="2" />
+<text  x="285.47" y="95.5" ></text>
+</g>
+<g >
+<title>compute_phi (67,108,864 mult, 0.06%)</title><rect x="369.3" y="101" width="0.6" height="15.0" fill="rgb(234,135,32)" rx="2" ry="2" />
+<text  x="372.29" y="111.5" ></text>
+</g>
+<g >
+<title>mult (54,001,664 mult, 0.04%)</title><rect x="337.6" y="85" width="0.5" height="15.0" fill="rgb(206,7,1)" rx="2" ry="2" />
+<text  x="340.62" y="95.5" ></text>
+</g>
+<g >
+<title>compute_tf (33,554,432 mult, 0.03%)</title><rect x="369.9" y="101" width="0.4" height="15.0" fill="rgb(249,206,49)" rx="2" ry="2" />
+<text  x="372.95" y="111.5" ></text>
+</g>
+<g >
+<title>mult (115,343,360 mult, 0.10%)</title><rect x="470.5" y="85" width="1.2" height="15.0" fill="rgb(206,7,1)" rx="2" ry="2" />
+<text  x="473.53" y="95.5" ></text>
+</g>
+<g >
+<title>basis_convert (722,468,864 mult, 0.60%)</title><rect x="317.2" y="69" width="7.1" height="15.0" fill="rgb(208,15,3)" rx="2" ry="2" />
+<text  x="320.21" y="79.5" ></text>
+</g>
+<g >
+<title>ntt_common (271,843,328 mult, 0.23%)</title><rect x="365.3" y="69" width="2.6" height="15.0" fill="rgb(248,198,47)" rx="2" ry="2" />
+<text  x="368.28" y="79.5" ></text>
+</g>
+<g >
+<title>compute_tf (15,990,784 mult, 0.01%)</title><rect x="365.1" y="69" width="0.2" height="15.0" fill="rgb(249,206,49)" rx="2" ry="2" />
+<text  x="368.13" y="79.5" ></text>
+</g>
+<g >
+<title>multiply (12,131,500,032 mult, 10.06%)</title><rect x="1070.2" y="133" width="118.6" height="15.0" fill="rgb(225,94,22)" rx="2" ry="2" />
+<text  x="1073.15" y="143.5" >multiply</text>
+</g>
+<g >
+<title>compute_tf (27,525,120 mult, 0.02%)</title><rect x="612.9" y="37" width="0.3" height="15.0" fill="rgb(249,206,49)" rx="2" ry="2" />
+<text  x="615.91" y="47.5" ></text>
+</g>
+<g >
+<title>ntt (330,301,440 mult, 0.27%)</title><rect x="361.2" y="69" width="3.2" height="15.0" fill="rgb(254,226,54)" rx="2" ry="2" />
+<text  x="364.17" y="79.5" ></text>
+</g>
+<g >
+<title>mult (871,366,656 mult, 0.72%)</title><rect x="141.3" y="53" width="8.6" height="15.0" fill="rgb(206,7,1)" rx="2" ry="2" />
+<text  x="144.34" y="63.5" ></text>
+</g>
+<g >
+<title>ntt (896,532,480 mult, 0.74%)</title><rect x="691.3" y="85" width="8.8" height="15.0" fill="rgb(254,226,54)" rx="2" ry="2" />
+<text  x="694.33" y="95.5" ></text>
+</g>
+<g >
+<title>ntt_common (454,557,696 mult, 0.38%)</title><rect x="716.8" y="85" width="4.5" height="15.0" fill="rgb(248,198,47)" rx="2" ry="2" />
+<text  x="719.84" y="95.5" ></text>
+</g>
+<g >
+<title>rotate_sum (2,965,372,928 mult, 2.46%)</title><rect x="1034.2" y="149" width="29.0" height="15.0" fill="rgb(215,49,11)" rx="2" ry="2" />
+<text  x="1037.23" y="159.5" >ro..</text>
+</g>
+<g >
+<title>intt (167,772,160 mult, 0.14%)</title><rect x="404.3" y="69" width="1.7" height="15.0" fill="rgb(225,96,23)" rx="2" ry="2" />
+<text  x="407.32" y="79.5" ></text>
+</g>
+<g >
+<title>compute_phi (28,311,552 mult, 0.02%)</title><rect x="28.7" y="85" width="0.3" height="15.0" fill="rgb(234,135,32)" rx="2" ry="2" />
+<text  x="31.73" y="95.5" ></text>
+</g>
+<g >
+<title>iteration (51,955,105,792 mult, 43.07%)</title><rect x="681.7" y="165" width="508.3" height="15.0" fill="rgb(215,46,11)" rx="2" ry="2" />
+<text  x="684.74" y="175.5" >iteration</text>
+</g>
+<g >
+<title>mult (166,723,584 mult, 0.14%)</title><rect x="1187.2" y="101" width="1.6" height="15.0" fill="rgb(206,7,1)" rx="2" ry="2" />
+<text  x="1190.20" y="111.5" ></text>
+</g>
+<g >
+<title>mod_down_divide (143,130,624 mult, 0.12%)</title><rect x="597.0" y="69" width="1.4" height="15.0" fill="rgb(213,38,9)" rx="2" ry="2" />
+<text  x="600.05" y="79.5" ></text>
+</g>
+<g >
+<title>multiply (4,127,719,424 mult, 3.42%)</title><rect x="681.7" y="133" width="40.4" height="15.0" fill="rgb(225,94,22)" rx="2" ry="2" />
+<text  x="684.74" y="143.5" >mul..</text>
+</g>
+<g >
+<title>compute_tf (33,947,648 mult, 0.03%)</title><rect x="651.4" y="53" width="0.3" height="15.0" fill="rgb(249,206,49)" rx="2" ry="2" />
+<text  x="654.37" y="63.5" ></text>
+</g>
+<g >
+<title>compute_tf (88,080,384 mult, 0.07%)</title><rect x="659.1" y="53" width="0.8" height="15.0" fill="rgb(249,206,49)" rx="2" ry="2" />
+<text  x="662.07" y="63.5" ></text>
+</g>
+<g >
+<title>basis_convert (4,216,061,952 mult, 3.50%)</title><rect x="57.5" y="53" width="41.2" height="15.0" fill="rgb(208,15,3)" rx="2" ry="2" />
+<text  x="60.47" y="63.5" >bas..</text>
+</g>
+<g >
+<title>multiply_plain (5,737,807,872 mult, 4.76%)</title><rect x="868.0" y="101" width="56.2" height="15.0" fill="rgb(225,92,22)" rx="2" ry="2" />
+<text  x="871.05" y="111.5" >multi..</text>
+</g>
+<g >
+<title>compute_phi (111,673,344 mult, 0.09%)</title><rect x="502.5" y="85" width="1.1" height="15.0" fill="rgb(234,135,32)" rx="2" ry="2" />
+<text  x="505.46" y="95.5" ></text>
+</g>
+<g >
+<title>compute_tf (29,884,416 mult, 0.02%)</title><rect x="443.1" y="69" width="0.3" height="15.0" fill="rgb(249,206,49)" rx="2" ry="2" />
+<text  x="446.14" y="79.5" ></text>
+</g>
+<g >
+<title>compute_phi (83,361,792 mult, 0.07%)</title><rect x="306.3" y="53" width="0.9" height="15.0" fill="rgb(234,135,32)" rx="2" ry="2" />
+<text  x="309.34" y="63.5" ></text>
+</g>
+<g >
+<title>mod_down_reduce (1,466,957,824 mult, 1.22%)</title><rect x="317.2" y="85" width="14.4" height="15.0" fill="rgb(244,179,42)" rx="2" ry="2" />
+<text  x="320.21" y="95.5" ></text>
+</g>
+<g >
+<title>ntt_common (40,108,032 mult, 0.03%)</title><rect x="1064.1" y="101" width="0.4" height="15.0" fill="rgb(248,198,47)" rx="2" ry="2" />
+<text  x="1067.10" y="111.5" ></text>
+</g>
+<g >
+<title>ntt_common (481,296,384 mult, 0.40%)</title><rect x="710.5" y="69" width="4.7" height="15.0" fill="rgb(248,198,47)" rx="2" ry="2" />
+<text  x="713.52" y="79.5" ></text>
+</g>
+<g >
+<title>ntt (534,773,760 mult, 0.44%)</title><rect x="716.1" y="101" width="5.2" height="15.0" fill="rgb(254,226,54)" rx="2" ry="2" />
+<text  x="719.06" y="111.5" ></text>
+</g>
+<g >
+<title>mult (115,343,360 mult, 0.10%)</title><rect x="514.0" y="101" width="1.1" height="15.0" fill="rgb(206,7,1)" rx="2" ry="2" />
+<text  x="516.95" y="111.5" ></text>
+</g>
+<g >
+<title>compute_tf (57,671,680 mult, 0.05%)</title><rect x="490.9" y="69" width="0.5" height="15.0" fill="rgb(249,206,49)" rx="2" ry="2" />
+<text  x="493.85" y="79.5" ></text>
+</g>
+<g >
+<title>baby_step_basis (4,969,988,096 mult, 4.12%)</title><rect x="293.0" y="149" width="48.6" height="15.0" fill="rgb(219,68,16)" rx="2" ry="2" />
+<text  x="295.95" y="159.5" >baby..</text>
+</g>
+<g >
+<title>multiply_plain (476,577,792 mult, 0.40%)</title><rect x="465.9" y="101" width="4.6" height="15.0" fill="rgb(225,92,22)" rx="2" ry="2" />
+<text  x="468.87" y="111.5" ></text>
+</g>
+<g >
+<title>intt (2,296,381,440 mult, 1.90%)</title><rect x="774.5" y="85" width="22.5" height="15.0" fill="rgb(225,96,23)" rx="2" ry="2" />
+<text  x="777.50" y="95.5" >i..</text>
+</g>
+<g >
+<title>compute_tf (41,680,896 mult, 0.03%)</title><rect x="307.2" y="53" width="0.4" height="15.0" fill="rgb(249,206,49)" rx="2" ry="2" />
+<text  x="310.15" y="63.5" ></text>
+</g>
+<g >
+<title>compute_tf (25,559,040 mult, 0.02%)</title><rect x="349.8" y="53" width="0.2" height="15.0" fill="rgb(249,206,49)" rx="2" ry="2" />
+<text  x="352.77" y="63.5" ></text>
+</g>
+<g >
+<title>mult (166,723,584 mult, 0.14%)</title><rect x="1131.0" y="85" width="1.6" height="15.0" fill="rgb(206,7,1)" rx="2" ry="2" />
+<text  x="1133.96" y="95.5" ></text>
+</g>
+<g >
+<title>leaf_prods (1,312,817,152 mult, 1.09%)</title><rect x="368.4" y="149" width="12.9" height="15.0" fill="rgb(248,199,47)" rx="2" ry="2" />
+<text  x="371.43" y="159.5" ></text>
+</g>
+<g >
+<title>multiply (4,619,763,712 mult, 3.83%)</title><rect x="293.0" y="117" width="45.1" height="15.0" fill="rgb(225,94,22)" rx="2" ry="2" />
+<text  x="295.95" y="127.5" >mult..</text>
+</g>
+<g >
+<title>intt (188,743,680 mult, 0.16%)</title><rect x="1056.9" y="101" width="1.8" height="15.0" fill="rgb(225,96,23)" rx="2" ry="2" />
+<text  x="1059.87" y="111.5" ></text>
+</g>
+<g >
+<title>compute_phi (67,895,296 mult, 0.06%)</title><rect x="650.7" y="53" width="0.7" height="15.0" fill="rgb(234,135,32)" rx="2" ry="2" />
+<text  x="653.70" y="63.5" ></text>
+</g>
+<g >
+<title>compute_tf (26,738,688 mult, 0.02%)</title><rect x="716.6" y="85" width="0.2" height="15.0" fill="rgb(249,206,49)" rx="2" ry="2" />
+<text  x="719.58" y="95.5" ></text>
+</g>
+<g >
+<title>ntt_common (6,176,636,928 mult, 5.12%)</title><rect x="807.6" y="69" width="60.4" height="15.0" fill="rgb(248,198,47)" rx="2" ry="2" />
+<text  x="810.62" y="79.5" >ntt_co..</text>
+</g>
+<g >
+<title>multiply_plain (115,343,360 mult, 0.10%)</title><rect x="515.1" y="133" width="1.1" height="15.0" fill="rgb(225,92,22)" rx="2" ry="2" />
+<text  x="518.08" y="143.5" ></text>
+</g>
+<g >
+<title>ntt_common (86,900,736 mult, 0.07%)</title><rect x="519.3" y="69" width="0.8" height="15.0" fill="rgb(248,198,47)" rx="2" ry="2" />
+<text  x="522.26" y="79.5" ></text>
+</g>
+<g >
+<title>compute_phi (56,623,104 mult, 0.05%)</title><rect x="709.7" y="69" width="0.5" height="15.0" fill="rgb(234,135,32)" rx="2" ry="2" />
+<text  x="712.69" y="79.5" ></text>
+</g>
+<g >
+<title>compute_phi (25,165,824 mult, 0.02%)</title><rect x="1064.5" y="101" width="0.2" height="15.0" fill="rgb(234,135,32)" rx="2" ry="2" />
+<text  x="1067.49" y="111.5" ></text>
+</g>
+<g >
+<title>compute_tf (13,107,200 mult, 0.01%)</title><rect x="338.7" y="101" width="0.2" height="15.0" fill="rgb(249,206,49)" rx="2" ry="2" />
+<text  x="341.74" y="111.5" ></text>
+</g>
+<g >
+<title>mod_raise (14,401,142,784 mult, 11.94%)</title><rect x="727.2" y="101" width="140.8" height="15.0" fill="rgb(246,188,45)" rx="2" ry="2" />
+<text  x="730.17" y="111.5" >mod_raise</text>
+</g>
+<g >
+<title>basis_convert (304,087,040 mult, 0.25%)</title><rect x="1053.9" y="101" width="3.0" height="15.0" fill="rgb(208,15,3)" rx="2" ry="2" />
+<text  x="1056.90" y="111.5" ></text>
+</g>
+<g >
+<title>ntt_common (160,432,128 mult, 0.13%)</title><rect x="523.7" y="85" width="1.5" height="15.0" fill="rgb(248,198,47)" rx="2" ry="2" />
+<text  x="526.65" y="95.5" ></text>
+</g>
+<g >
+<title>key_switch_hoisting (1,399,848,960 mult, 1.16%)</title><rect x="1034.2" y="133" width="13.7" height="15.0" fill="rgb(246,191,45)" rx="2" ry="2" />
+<text  x="1037.23" y="143.5" ></text>
+</g>
+<g >
+<title>ntt_common (127,008,768 mult, 0.11%)</title><rect x="22.8" y="69" width="1.2" height="15.0" fill="rgb(248,198,47)" rx="2" ry="2" />
+<text  x="25.75" y="79.5" ></text>
+</g>
+<g >
+<title>mod_down (4,377,018,368 mult, 3.63%)</title><rect x="631.8" y="101" width="42.8" height="15.0" fill="rgb(240,162,38)" rx="2" ry="2" />
+<text  x="634.76" y="111.5" >mod_..</text>
+</g>
+<g >
+<title>rotate (15,734,669,312 mult, 13.04%)</title><rect x="55.3" y="117" width="154.0" height="15.0" fill="rgb(232,125,30)" rx="2" ry="2" />
+<text  x="58.35" y="127.5" >rotate</text>
+</g>
+<g >
+<title>bootstrap_regression (120,621,367,296 mult, 100.00%)</title><rect x="10.0" y="197" width="1180.0" height="15.0" fill="rgb(219,67,16)" rx="2" ry="2" />
+<text  x="13.00" y="207.5" >bootstrap_regression</text>
+</g>
+<g >
+<title>mod_raise (1,352,663,040 mult, 1.12%)</title><rect x="1034.7" y="117" width="13.2" height="15.0" fill="rgb(246,188,45)" rx="2" ry="2" />
+<text  x="1037.70" y="127.5" ></text>
+</g>
+<g >
+<title>compute_phi (421,527,552 mult, 0.35%)</title><rect x="987.6" y="69" width="4.2" height="15.0" fill="rgb(234,135,32)" rx="2" ry="2" />
+<text  x="990.64" y="79.5" ></text>
+</g>
+<g >
+<title>key_switch_hoisting (1,298,399,232 mult, 1.08%)</title><rect x="341.6" y="101" width="12.7" height="15.0" fill="rgb(246,191,45)" rx="2" ry="2" />
+<text  x="344.57" y="111.5" ></text>
+</g>
+<g >
+<title>ntt_common (196,083,712 mult, 0.16%)</title><rect x="707.8" y="69" width="1.9" height="15.0" fill="rgb(248,198,47)" rx="2" ry="2" />
+<text  x="710.77" y="79.5" ></text>
+</g>
+<g >
+<title>compute_tf (130,547,712 mult, 0.11%)</title><rect x="259.5" y="53" width="1.3" height="15.0" fill="rgb(249,206,49)" rx="2" ry="2" />
+<text  x="262.48" y="63.5" ></text>
+</g>
+<g >
+<title>compute_tf (71,565,312 mult, 0.06%)</title><rect x="619.2" y="37" width="0.7" height="15.0" fill="rgb(249,206,49)" rx="2" ry="2" />
+<text  x="622.16" y="47.5" ></text>
+</g>
+<g >
+<title>compute_phi (29,884,416 mult, 0.02%)</title><rect x="688.4" y="69" width="0.3" height="15.0" fill="rgb(234,135,32)" rx="2" ry="2" />
+<text  x="691.40" y="79.5" ></text>
+</g>
+<g >
+<title>intt (20,971,520 mult, 0.02%)</title><rect x="369.1" y="117" width="0.2" height="15.0" fill="rgb(225,96,23)" rx="2" ry="2" />
+<text  x="372.08" y="127.5" ></text>
+</g>
+<g >
+<title>ntt (1,431,306,240 mult, 1.19%)</title><rect x="617.8" y="53" width="14.0" height="15.0" fill="rgb(254,226,54)" rx="2" ry="2" />
+<text  x="620.76" y="63.5" ></text>
+</g>
+<g >
+<title>intt (47,185,920 mult, 0.04%)</title><rect x="1064.0" y="117" width="0.5" height="15.0" fill="rgb(225,96,23)" rx="2" ry="2" />
+<text  x="1067.03" y="127.5" ></text>
+</g>
+<g >
+<title>mod_reduce_rescale (619,708,416 mult, 0.51%)</title><rect x="715.2" y="117" width="6.1" height="15.0" fill="rgb(238,153,36)" rx="2" ry="2" />
+<text  x="718.23" y="127.5" ></text>
+</g>
+<g >
+<title>ntt_common (581,566,464 mult, 0.48%)</title><rect x="391.7" y="53" width="5.6" height="15.0" fill="rgb(248,198,47)" rx="2" ry="2" />
+<text  x="394.65" y="63.5" ></text>
+</g>
+<g >
+<title>multiply_plain (871,366,656 mult, 0.72%)</title><rect x="141.3" y="69" width="8.6" height="15.0" fill="rgb(225,92,22)" rx="2" ry="2" />
+<text  x="144.34" y="79.5" ></text>
+</g>
+</g>
+</svg>

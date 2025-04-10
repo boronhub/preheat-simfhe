@@ -1,0 +1,1942 @@
+<?xml version="1.0" standalone="no"?>
+<!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN" "http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd">
+<svg version="1.1" width="1200" height="262" onload="init(evt)" viewBox="0 0 1200 262" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink">
+<!-- Flame graph stack visualization. See https://github.com/brendangregg/FlameGraph for latest version, and http://www.brendangregg.com/flamegraphs.html for examples. -->
+<!-- NOTES:  -->
+<defs>
+	<linearGradient id="background" y1="0" y2="1" x1="0" x2="0" >
+		<stop stop-color="#eeeeee" offset="5%" />
+		<stop stop-color="#eeeeb0" offset="95%" />
+	</linearGradient>
+</defs>
+<style type="text/css">
+	text { font-family:Verdana; font-size:12px; fill:rgb(0,0,0); }
+	#search, #ignorecase { opacity:0.1; cursor:pointer; }
+	#search:hover, #search.show, #ignorecase:hover, #ignorecase.show { opacity:1; }
+	#subtitle { text-anchor:middle; font-color:rgb(160,160,160); }
+	#title { text-anchor:middle; font-size:17px}
+	#unzoom { cursor:pointer; }
+	#frames > *:hover { stroke:black; stroke-width:0.5; cursor:pointer; }
+	.hide { display:none; }
+	.parent { opacity:0.5; }
+</style>
+<script type="text/ecmascript">
+<![CDATA[
+	"use strict";
+	var details, searchbtn, unzoombtn, matchedtxt, svg, searching, currentSearchTerm, ignorecase, ignorecaseBtn;
+	function init(evt) {
+		details = document.getElementById("details").firstChild;
+		searchbtn = document.getElementById("search");
+		ignorecaseBtn = document.getElementById("ignorecase");
+		unzoombtn = document.getElementById("unzoom");
+		matchedtxt = document.getElementById("matched");
+		svg = document.getElementsByTagName("svg")[0];
+		searching = 0;
+		currentSearchTerm = null;
+
+		// use GET parameters to restore a flamegraphs state.
+		var params = get_params();
+		if (params.x && params.y)
+			zoom(find_group(document.querySelector('[x="' + params.x + '"][y="' + params.y + '"]')));
+                if (params.s) search(params.s);
+	}
+
+	// event listeners
+	window.addEventListener("click", function(e) {
+		var target = find_group(e.target);
+		if (target) {
+			if (target.nodeName == "a") {
+				if (e.ctrlKey === false) return;
+				e.preventDefault();
+			}
+			if (target.classList.contains("parent")) unzoom(true);
+			zoom(target);
+			if (!document.querySelector('.parent')) {
+				// we have basically done a clearzoom so clear the url
+				var params = get_params();
+				if (params.x) delete params.x;
+				if (params.y) delete params.y;
+				history.replaceState(null, null, parse_params(params));
+				unzoombtn.classList.add("hide");
+				return;
+			}
+
+			// set parameters for zoom state
+			var el = target.querySelector("rect");
+			if (el && el.attributes && el.attributes.y && el.attributes._orig_x) {
+				var params = get_params()
+				params.x = el.attributes._orig_x.value;
+				params.y = el.attributes.y.value;
+				history.replaceState(null, null, parse_params(params));
+			}
+		}
+		else if (e.target.id == "unzoom") clearzoom();
+		else if (e.target.id == "search") search_prompt();
+		else if (e.target.id == "ignorecase") toggle_ignorecase();
+	}, false)
+
+	// mouse-over for info
+	// show
+	window.addEventListener("mouseover", function(e) {
+		var target = find_group(e.target);
+		if (target) details.nodeValue = "Function: " + g_to_text(target);
+	}, false)
+
+	// clear
+	window.addEventListener("mouseout", function(e) {
+		var target = find_group(e.target);
+		if (target) details.nodeValue = ' ';
+	}, false)
+
+	// ctrl-F for search
+	// ctrl-I to toggle case-sensitive search
+	window.addEventListener("keydown",function (e) {
+		if (e.keyCode === 114 || (e.ctrlKey && e.keyCode === 70)) {
+			e.preventDefault();
+			search_prompt();
+		}
+		else if (e.ctrlKey && e.keyCode === 73) {
+			e.preventDefault();
+			toggle_ignorecase();
+		}
+	}, false)
+
+	// functions
+	function get_params() {
+		var params = {};
+		var paramsarr = window.location.search.substr(1).split('&');
+		for (var i = 0; i < paramsarr.length; ++i) {
+			var tmp = paramsarr[i].split("=");
+			if (!tmp[0] || !tmp[1]) continue;
+			params[tmp[0]]  = decodeURIComponent(tmp[1]);
+		}
+		return params;
+	}
+	function parse_params(params) {
+		var uri = "?";
+		for (var key in params) {
+			uri += key + '=' + encodeURIComponent(params[key]) + '&';
+		}
+		if (uri.slice(-1) == "&")
+			uri = uri.substring(0, uri.length - 1);
+		if (uri == '?')
+			uri = window.location.href.split('?')[0];
+		return uri;
+	}
+	function find_child(node, selector) {
+		var children = node.querySelectorAll(selector);
+		if (children.length) return children[0];
+	}
+	function find_group(node) {
+		var parent = node.parentElement;
+		if (!parent) return;
+		if (parent.id == "frames") return node;
+		return find_group(parent);
+	}
+	function orig_save(e, attr, val) {
+		if (e.attributes["_orig_" + attr] != undefined) return;
+		if (e.attributes[attr] == undefined) return;
+		if (val == undefined) val = e.attributes[attr].value;
+		e.setAttribute("_orig_" + attr, val);
+	}
+	function orig_load(e, attr) {
+		if (e.attributes["_orig_"+attr] == undefined) return;
+		e.attributes[attr].value = e.attributes["_orig_" + attr].value;
+		e.removeAttribute("_orig_"+attr);
+	}
+	function g_to_text(e) {
+		var text = find_child(e, "title").firstChild.nodeValue;
+		return (text)
+	}
+	function g_to_func(e) {
+		var func = g_to_text(e);
+		// if there's any manipulation we want to do to the function
+		// name before it's searched, do it here before returning.
+		return (func);
+	}
+	function update_text(e) {
+		var r = find_child(e, "rect");
+		var t = find_child(e, "text");
+		var w = parseFloat(r.attributes.width.value) -3;
+		var txt = find_child(e, "title").textContent.replace(/\([^(]*\)$/,"");
+		t.attributes.x.value = parseFloat(r.attributes.x.value) + 3;
+
+		// Smaller than this size won't fit anything
+		if (w < 2 * 12 * 0.59) {
+			t.textContent = "";
+			return;
+		}
+
+		t.textContent = txt;
+		var sl = t.getSubStringLength(0, txt.length);
+		// check if only whitespace or if we can fit the entire string into width w
+		if (/^ *$/.test(txt) || sl < w)
+			return;
+
+		// this isn't perfect, but gives a good starting point
+		// and avoids calling getSubStringLength too often
+		var start = Math.floor((w/sl) * txt.length);
+		for (var x = start; x > 0; x = x-2) {
+			if (t.getSubStringLength(0, x + 2) <= w) {
+				t.textContent = txt.substring(0, x) + "..";
+				return;
+			}
+		}
+		t.textContent = "";
+	}
+
+	// zoom
+	function zoom_reset(e) {
+		if (e.attributes != undefined) {
+			orig_load(e, "x");
+			orig_load(e, "width");
+		}
+		if (e.childNodes == undefined) return;
+		for (var i = 0, c = e.childNodes; i < c.length; i++) {
+			zoom_reset(c[i]);
+		}
+	}
+	function zoom_child(e, x, ratio) {
+		if (e.attributes != undefined) {
+			if (e.attributes.x != undefined) {
+				orig_save(e, "x");
+				e.attributes.x.value = (parseFloat(e.attributes.x.value) - x - 10) * ratio + 10;
+				if (e.tagName == "text")
+					e.attributes.x.value = find_child(e.parentNode, "rect[x]").attributes.x.value + 3;
+			}
+			if (e.attributes.width != undefined) {
+				orig_save(e, "width");
+				e.attributes.width.value = parseFloat(e.attributes.width.value) * ratio;
+			}
+		}
+
+		if (e.childNodes == undefined) return;
+		for (var i = 0, c = e.childNodes; i < c.length; i++) {
+			zoom_child(c[i], x - 10, ratio);
+		}
+	}
+	function zoom_parent(e) {
+		if (e.attributes) {
+			if (e.attributes.x != undefined) {
+				orig_save(e, "x");
+				e.attributes.x.value = 10;
+			}
+			if (e.attributes.width != undefined) {
+				orig_save(e, "width");
+				e.attributes.width.value = parseInt(svg.width.baseVal.value) - (10 * 2);
+			}
+		}
+		if (e.childNodes == undefined) return;
+		for (var i = 0, c = e.childNodes; i < c.length; i++) {
+			zoom_parent(c[i]);
+		}
+	}
+	function zoom(node) {
+		var attr = find_child(node, "rect").attributes;
+		var width = parseFloat(attr.width.value);
+		var xmin = parseFloat(attr.x.value);
+		var xmax = parseFloat(xmin + width);
+		var ymin = parseFloat(attr.y.value);
+		var ratio = (svg.width.baseVal.value - 2 * 10) / width;
+
+		// XXX: Workaround for JavaScript float issues (fix me)
+		var fudge = 0.0001;
+
+		unzoombtn.classList.remove("hide");
+
+		var el = document.getElementById("frames").children;
+		for (var i = 0; i < el.length; i++) {
+			var e = el[i];
+			var a = find_child(e, "rect").attributes;
+			var ex = parseFloat(a.x.value);
+			var ew = parseFloat(a.width.value);
+			var upstack;
+			// Is it an ancestor
+			if (0 == 0) {
+				upstack = parseFloat(a.y.value) > ymin;
+			} else {
+				upstack = parseFloat(a.y.value) < ymin;
+			}
+			if (upstack) {
+				// Direct ancestor
+				if (ex <= xmin && (ex+ew+fudge) >= xmax) {
+					e.classList.add("parent");
+					zoom_parent(e);
+					update_text(e);
+				}
+				// not in current path
+				else
+					e.classList.add("hide");
+			}
+			// Children maybe
+			else {
+				// no common path
+				if (ex < xmin || ex + fudge >= xmax) {
+					e.classList.add("hide");
+				}
+				else {
+					zoom_child(e, xmin, ratio);
+					update_text(e);
+				}
+			}
+		}
+		search();
+	}
+	function unzoom(dont_update_text) {
+		unzoombtn.classList.add("hide");
+		var el = document.getElementById("frames").children;
+		for(var i = 0; i < el.length; i++) {
+			el[i].classList.remove("parent");
+			el[i].classList.remove("hide");
+			zoom_reset(el[i]);
+			if(!dont_update_text) update_text(el[i]);
+		}
+		search();
+	}
+	function clearzoom() {
+		unzoom();
+
+		// remove zoom state
+		var params = get_params();
+		if (params.x) delete params.x;
+		if (params.y) delete params.y;
+		history.replaceState(null, null, parse_params(params));
+	}
+
+	// search
+	function toggle_ignorecase() {
+		ignorecase = !ignorecase;
+		if (ignorecase) {
+			ignorecaseBtn.classList.add("show");
+		} else {
+			ignorecaseBtn.classList.remove("show");
+		}
+		reset_search();
+		search();
+	}
+	function reset_search() {
+		var el = document.querySelectorAll("#frames rect");
+		for (var i = 0; i < el.length; i++) {
+			orig_load(el[i], "fill")
+		}
+		var params = get_params();
+		delete params.s;
+		history.replaceState(null, null, parse_params(params));
+	}
+	function search_prompt() {
+		if (!searching) {
+			var term = prompt("Enter a search term (regexp " +
+			    "allowed, eg: ^ext4_)"
+			    + (ignorecase ? ", ignoring case" : "")
+			    + "\nPress Ctrl-i to toggle case sensitivity", "");
+			if (term != null) search(term);
+		} else {
+			reset_search();
+			searching = 0;
+			currentSearchTerm = null;
+			searchbtn.classList.remove("show");
+			searchbtn.firstChild.nodeValue = "Search"
+			matchedtxt.classList.add("hide");
+			matchedtxt.firstChild.nodeValue = ""
+		}
+	}
+	function search(term) {
+		if (term) currentSearchTerm = term;
+		if (currentSearchTerm === null) return;
+
+		var re = new RegExp(currentSearchTerm, ignorecase ? 'i' : '');
+		var el = document.getElementById("frames").children;
+		var matches = new Object();
+		var maxwidth = 0;
+		for (var i = 0; i < el.length; i++) {
+			var e = el[i];
+			var func = g_to_func(e);
+			var rect = find_child(e, "rect");
+			if (func == null || rect == null)
+				continue;
+
+			// Save max width. Only works as we have a root frame
+			var w = parseFloat(rect.attributes.width.value);
+			if (w > maxwidth)
+				maxwidth = w;
+
+			if (func.match(re)) {
+				// highlight
+				var x = parseFloat(rect.attributes.x.value);
+				orig_save(rect, "fill");
+				rect.attributes.fill.value = "rgb(230,0,230)";
+
+				// remember matches
+				if (matches[x] == undefined) {
+					matches[x] = w;
+				} else {
+					if (w > matches[x]) {
+						// overwrite with parent
+						matches[x] = w;
+					}
+				}
+				searching = 1;
+			}
+		}
+		if (!searching)
+			return;
+		var params = get_params();
+		params.s = currentSearchTerm;
+		history.replaceState(null, null, parse_params(params));
+
+		searchbtn.classList.add("show");
+		searchbtn.firstChild.nodeValue = "Reset Search";
+
+		// calculate percent matched, excluding vertical overlap
+		var count = 0;
+		var lastx = -1;
+		var lastw = 0;
+		var keys = Array();
+		for (k in matches) {
+			if (matches.hasOwnProperty(k))
+				keys.push(k);
+		}
+		// sort the matched frames by their x location
+		// ascending, then width descending
+		keys.sort(function(a, b){
+			return a - b;
+		});
+		// Step through frames saving only the biggest bottom-up frames
+		// thanks to the sort order. This relies on the tree property
+		// where children are always smaller than their parents.
+		var fudge = 0.0001;	// JavaScript floating point
+		for (var k in keys) {
+			var x = parseFloat(keys[k]);
+			var w = matches[keys[k]];
+			if (x >= lastx + lastw - fudge) {
+				count += w;
+				lastx = x;
+				lastw = w;
+			}
+		}
+		// display matched percent
+		matchedtxt.classList.remove("hide");
+		var pct = 100 * count / maxwidth;
+		if (pct != 100) pct = pct.toFixed(1)
+		matchedtxt.firstChild.nodeValue = "Matched: " + pct + "%";
+	}
+]]>
+</script>
+<rect x="0.0" y="0" width="1200.0" height="262.0" fill="url(#background)"  />
+<text id="title" x="600.00" y="24" >logistic_regression.bootstrap_regression_arch.total_cycle_fm_wc</text>
+<text id="details" x="10.00" y="245" > </text>
+<text id="unzoom" x="10.00" y="24" class="hide">Reset Zoom</text>
+<text id="search" x="1090.00" y="24" >Search</text>
+<text id="ignorecase" x="1174.00" y="24" >ic</text>
+<text id="matched" x="1090.00" y="245" > </text>
+<g id="frames">
+<g >
+<title>mod_down (9,035,776 total_cycle_fm_wc, 0.14%)</title><rect x="1166.9" y="133" width="1.6" height="15.0" fill="rgb(240,162,38)" rx="2" ry="2" />
+<text  x="1169.85" y="143.5" ></text>
+</g>
+<g >
+<title>mod_down (10,260,480 total_cycle_fm_wc, 0.16%)</title><rect x="236.7" y="101" width="1.8" height="15.0" fill="rgb(240,162,38)" rx="2" ry="2" />
+<text  x="239.66" y="111.5" ></text>
+</g>
+<g >
+<title>rotate (14,995,968 total_cycle_fm_wc, 0.23%)</title><rect x="10.0" y="133" width="2.8" height="15.0" fill="rgb(232,125,30)" rx="2" ry="2" />
+<text  x="13.01" y="143.5" ></text>
+</g>
+<g >
+<title>basis_convert (3,145,728 total_cycle_fm_wc, 0.05%)</title><rect x="229.6" y="69" width="0.5" height="15.0" fill="rgb(208,15,3)" rx="2" ry="2" />
+<text  x="232.56" y="79.5" ></text>
+</g>
+<g >
+<title>ntt (3,354,624 total_cycle_fm_wc, 0.05%)</title><rect x="230.4" y="69" width="0.6" height="15.0" fill="rgb(254,226,54)" rx="2" ry="2" />
+<text  x="233.37" y="79.5" ></text>
+</g>
+<g >
+<title>key_switch_inner_product (890,880 total_cycle_fm_wc, 0.01%)</title><rect x="229.3" y="101" width="0.2" height="15.0" fill="rgb(240,163,39)" rx="2" ry="2" />
+<text  x="232.35" y="111.5" ></text>
+</g>
+<g >
+<title>ntt (14,536,704 total_cycle_fm_wc, 0.23%)</title><rect x="272.4" y="53" width="2.7" height="15.0" fill="rgb(254,226,54)" rx="2" ry="2" />
+<text  x="275.42" y="63.5" ></text>
+</g>
+<g >
+<title>add (995,328 total_cycle_fm_wc, 0.02%)</title><rect x="1099.4" y="133" width="0.2" height="15.0" fill="rgb(244,183,43)" rx="2" ry="2" />
+<text  x="1102.45" y="143.5" ></text>
+</g>
+<g >
+<title>mod_down_reduce (2,223,104 total_cycle_fm_wc, 0.03%)</title><rect x="10.7" y="85" width="0.4" height="15.0" fill="rgb(244,179,42)" rx="2" ry="2" />
+<text  x="13.67" y="95.5" ></text>
+</g>
+<g >
+<title>mod_raise (6,273,024 total_cycle_fm_wc, 0.10%)</title><rect x="257.4" y="101" width="1.1" height="15.0" fill="rgb(246,188,45)" rx="2" ry="2" />
+<text  x="260.37" y="111.5" ></text>
+</g>
+<g >
+<title>mod_down_divide (1,376,256 total_cycle_fm_wc, 0.02%)</title><rect x="385.4" y="85" width="0.2" height="15.0" fill="rgb(213,38,9)" rx="2" ry="2" />
+<text  x="388.35" y="95.5" ></text>
+</g>
+<g >
+<title>mod_down_reduce (33,943,552 total_cycle_fm_wc, 0.53%)</title><rect x="1180.1" y="101" width="6.3" height="15.0" fill="rgb(244,179,42)" rx="2" ry="2" />
+<text  x="1183.14" y="111.5" ></text>
+</g>
+<g >
+<title>ntt_common (1,253,376 total_cycle_fm_wc, 0.02%)</title><rect x="230.1" y="53" width="0.3" height="15.0" fill="rgb(248,198,47)" rx="2" ry="2" />
+<text  x="233.14" y="63.5" ></text>
+</g>
+<g >
+<title>leaf_prods (11,083,776 total_cycle_fm_wc, 0.17%)</title><rect x="231.7" y="149" width="2.0" height="15.0" fill="rgb(248,199,47)" rx="2" ry="2" />
+<text  x="234.66" y="159.5" ></text>
+</g>
+<g >
+<title>key_switch_hoisting (134,025,216 total_cycle_fm_wc, 2.09%)</title><rect x="521.6" y="117" width="24.7" height="15.0" fill="rgb(246,191,45)" rx="2" ry="2" />
+<text  x="524.64" y="127.5" >k..</text>
+</g>
+<g >
+<title>multiply_plain (9,520,128 total_cycle_fm_wc, 0.15%)</title><rect x="17.0" y="117" width="1.8" height="15.0" fill="rgb(225,92,22)" rx="2" ry="2" />
+<text  x="20.01" y="127.5" ></text>
+</g>
+<g >
+<title>ntt (2,875,392 total_cycle_fm_wc, 0.04%)</title><rect x="16.5" y="101" width="0.5" height="15.0" fill="rgb(254,226,54)" rx="2" ry="2" />
+<text  x="19.48" y="111.5" ></text>
+</g>
+<g >
+<title>mult (22,413,312 total_cycle_fm_wc, 0.35%)</title><rect x="1076.6" y="85" width="4.2" height="15.0" fill="rgb(206,7,1)" rx="2" ry="2" />
+<text  x="1079.63" y="95.5" ></text>
+</g>
+<g >
+<title>mod_down (11,993,088 total_cycle_fm_wc, 0.19%)</title><rect x="396.6" y="117" width="2.2" height="15.0" fill="rgb(240,162,38)" rx="2" ry="2" />
+<text  x="399.60" y="127.5" ></text>
+</g>
+<g >
+<title>automorph (666,501,120 total_cycle_fm_wc, 10.39%)</title><rect x="83.6" y="101" width="122.5" height="15.0" fill="rgb(211,31,7)" rx="2" ry="2" />
+<text  x="86.57" y="111.5" >automorph</text>
+</g>
+<g >
+<title>ntt_common (21,150,720 total_cycle_fm_wc, 0.33%)</title><rect x="40.0" y="37" width="3.9" height="15.0" fill="rgb(248,198,47)" rx="2" ry="2" />
+<text  x="43.03" y="47.5" ></text>
+</g>
+<g >
+<title>intt (958,464 total_cycle_fm_wc, 0.01%)</title><rect x="1186.4" y="101" width="0.2" height="15.0" fill="rgb(225,96,23)" rx="2" ry="2" />
+<text  x="1189.38" y="111.5" ></text>
+</g>
+<g >
+<title>conj_and_add (15,067,648 total_cycle_fm_wc, 0.23%)</title><rect x="10.0" y="149" width="2.8" height="15.0" fill="rgb(232,126,30)" rx="2" ry="2" />
+<text  x="13.00" y="159.5" ></text>
+</g>
+<g >
+<title>ntt_common (1,018,368 total_cycle_fm_wc, 0.02%)</title><rect x="257.8" y="69" width="0.1" height="15.0" fill="rgb(248,198,47)" rx="2" ry="2" />
+<text  x="260.76" y="79.5" ></text>
+</g>
+<g >
+<title>add (2,269,184 total_cycle_fm_wc, 0.04%)</title><rect x="33.0" y="69" width="0.4" height="15.0" fill="rgb(244,183,43)" rx="2" ry="2" />
+<text  x="35.95" y="79.5" ></text>
+</g>
+<g >
+<title>automorph (2,868,903,936 total_cycle_fm_wc, 44.71%)</title><rect x="549.0" y="101" width="527.6" height="15.0" fill="rgb(211,31,7)" rx="2" ry="2" />
+<text  x="552.04" y="111.5" >automorph</text>
+</g>
+<g >
+<title>ntt_common (1,880,064 total_cycle_fm_wc, 0.03%)</title><rect x="1167.3" y="85" width="0.4" height="15.0" fill="rgb(248,198,47)" rx="2" ry="2" />
+<text  x="1170.35" y="95.5" ></text>
+</g>
+<g >
+<title>add (651,264 total_cycle_fm_wc, 0.01%)</title><rect x="1169.8" y="117" width="0.1" height="15.0" fill="rgb(244,183,43)" rx="2" ry="2" />
+<text  x="1172.82" y="127.5" ></text>
+</g>
+<g >
+<title>mult (2,860,032 total_cycle_fm_wc, 0.04%)</title><rect x="392.6" y="85" width="0.6" height="15.0" fill="rgb(206,7,1)" rx="2" ry="2" />
+<text  x="395.64" y="95.5" ></text>
+</g>
+<g >
+<title>ntt_common (11,123,712 total_cycle_fm_wc, 0.17%)</title><rect x="253.8" y="85" width="2.0" height="15.0" fill="rgb(248,198,47)" rx="2" ry="2" />
+<text  x="256.76" y="95.5" ></text>
+</g>
+<g >
+<title>rotate_inner (9,175,040 total_cycle_fm_wc, 0.14%)</title><rect x="11.1" y="117" width="1.7" height="15.0" fill="rgb(230,116,27)" rx="2" ry="2" />
+<text  x="14.08" y="127.5" ></text>
+</g>
+<g >
+<title>basis_convert (10,088,448 total_cycle_fm_wc, 0.16%)</title><rect x="1180.1" y="85" width="1.9" height="15.0" fill="rgb(208,15,3)" rx="2" ry="2" />
+<text  x="1183.14" y="95.5" ></text>
+</g>
+<g >
+<title>basis_convert (15,224,832 total_cycle_fm_wc, 0.24%)</title><rect x="260.1" y="53" width="2.8" height="15.0" fill="rgb(208,15,3)" rx="2" ry="2" />
+<text  x="263.12" y="63.5" ></text>
+</g>
+<g >
+<title>ntt_common (7,363,584 total_cycle_fm_wc, 0.11%)</title><rect x="262.9" y="37" width="1.4" height="15.0" fill="rgb(248,198,47)" rx="2" ry="2" />
+<text  x="265.94" y="47.5" ></text>
+</g>
+<g >
+<title>mod_down_reduce (9,916,416 total_cycle_fm_wc, 0.15%)</title><rect x="236.7" y="85" width="1.8" height="15.0" fill="rgb(244,179,42)" rx="2" ry="2" />
+<text  x="239.73" y="95.5" ></text>
+</g>
+<g >
+<title>multiply_plain (2,162,688 total_cycle_fm_wc, 0.03%)</title><rect x="233.3" y="133" width="0.4" height="15.0" fill="rgb(225,92,22)" rx="2" ry="2" />
+<text  x="236.30" y="143.5" ></text>
+</g>
+<g >
+<title>intt (9,771,008 total_cycle_fm_wc, 0.15%)</title><rect x="211.7" y="69" width="1.8" height="15.0" fill="rgb(225,96,23)" rx="2" ry="2" />
+<text  x="214.69" y="79.5" ></text>
+</g>
+<g >
+<title>add (651,264 total_cycle_fm_wc, 0.01%)</title><rect x="1179.9" y="85" width="0.1" height="15.0" fill="rgb(244,183,43)" rx="2" ry="2" />
+<text  x="1182.90" y="95.5" ></text>
+</g>
+<g >
+<title>basis_convert (4,460,544 total_cycle_fm_wc, 0.07%)</title><rect x="227.3" y="69" width="0.8" height="15.0" fill="rgb(208,15,3)" rx="2" ry="2" />
+<text  x="230.25" y="79.5" ></text>
+</g>
+<g >
+<title>mod_down (53,950,464 total_cycle_fm_wc, 0.84%)</title><rect x="34.0" y="85" width="9.9" height="15.0" fill="rgb(240,162,38)" rx="2" ry="2" />
+<text  x="37.00" y="95.5" ></text>
+</g>
+<g >
+<title>automorph (9,175,040 total_cycle_fm_wc, 0.14%)</title><rect x="11.1" y="101" width="1.7" height="15.0" fill="rgb(211,31,7)" rx="2" ry="2" />
+<text  x="14.08" y="111.5" ></text>
+</g>
+<g >
+<title>compute_tf (1,419,264 total_cycle_fm_wc, 0.02%)</title><rect x="532.7" y="69" width="0.3" height="15.0" fill="rgb(249,206,49)" rx="2" ry="2" />
+<text  x="535.72" y="79.5" ></text>
+</g>
+<g >
+<title>mod_reduce_rescale (2,955,264 total_cycle_fm_wc, 0.05%)</title><rect x="16.5" y="117" width="0.5" height="15.0" fill="rgb(238,153,36)" rx="2" ry="2" />
+<text  x="19.47" y="127.5" ></text>
+</g>
+<g >
+<title>multiply (40,491,008 total_cycle_fm_wc, 0.63%)</title><rect x="219.2" y="117" width="7.5" height="15.0" fill="rgb(225,94,22)" rx="2" ry="2" />
+<text  x="222.20" y="127.5" ></text>
+</g>
+<g >
+<title>key_switch_hoisting (3,262,464 total_cycle_fm_wc, 0.05%)</title><rect x="10.0" y="101" width="0.6" height="15.0" fill="rgb(246,191,45)" rx="2" ry="2" />
+<text  x="13.02" y="111.5" ></text>
+</g>
+<g >
+<title>add (901,120 total_cycle_fm_wc, 0.01%)</title><rect x="255.9" y="101" width="0.1" height="15.0" fill="rgb(244,183,43)" rx="2" ry="2" />
+<text  x="258.85" y="111.5" ></text>
+</g>
+<g >
+<title>intt (5,591,040 total_cycle_fm_wc, 0.09%)</title><rect x="271.4" y="53" width="1.0" height="15.0" fill="rgb(225,96,23)" rx="2" ry="2" />
+<text  x="274.39" y="63.5" ></text>
+</g>
+<g >
+<title>key_switch (81,718,272 total_cycle_fm_wc, 1.27%)</title><rect x="260.1" y="101" width="15.0" height="15.0" fill="rgb(223,87,20)" rx="2" ry="2" />
+<text  x="263.07" y="111.5" ></text>
+</g>
+<g >
+<title>ntt_common (1,723,392 total_cycle_fm_wc, 0.03%)</title><rect x="228.1" y="53" width="0.3" height="15.0" fill="rgb(248,198,47)" rx="2" ry="2" />
+<text  x="231.08" y="63.5" ></text>
+</g>
+<g >
+<title>multiply_plain (6,411,264 total_cycle_fm_wc, 0.10%)</title><rect x="258.9" y="117" width="1.2" height="15.0" fill="rgb(225,92,22)" rx="2" ry="2" />
+<text  x="261.89" y="127.5" ></text>
+</g>
+<g >
+<title>mod_raise (76,763,136 total_cycle_fm_wc, 1.20%)</title><rect x="18.8" y="69" width="14.2" height="15.0" fill="rgb(246,188,45)" rx="2" ry="2" />
+<text  x="21.84" y="79.5" ></text>
+</g>
+<g >
+<title>basis_convert (2,119,680 total_cycle_fm_wc, 0.03%)</title><rect x="257.4" y="85" width="0.4" height="15.0" fill="rgb(208,15,3)" rx="2" ry="2" />
+<text  x="260.37" y="95.5" ></text>
+</g>
+<g >
+<title>key_switch_inner_product (286,801,920 total_cycle_fm_wc, 4.47%)</title><rect x="1114.1" y="133" width="52.8" height="15.0" fill="rgb(240,163,39)" rx="2" ry="2" />
+<text  x="1117.11" y="143.5" >key_s..</text>
+</g>
+<g >
+<title>mult (2,752,512 total_cycle_fm_wc, 0.04%)</title><rect x="1179.4" y="85" width="0.5" height="15.0" fill="rgb(206,7,1)" rx="2" ry="2" />
+<text  x="1182.39" y="95.5" ></text>
+</g>
+<g >
+<title>ntt (22,683,648 total_cycle_fm_wc, 0.35%)</title><rect x="264.3" y="53" width="4.2" height="15.0" fill="rgb(254,226,54)" rx="2" ry="2" />
+<text  x="267.30" y="63.5" ></text>
+</g>
+<g >
+<title>ntt (9,105,408 total_cycle_fm_wc, 0.14%)</title><rect x="394.6" y="85" width="1.7" height="15.0" fill="rgb(254,226,54)" rx="2" ry="2" />
+<text  x="397.64" y="95.5" ></text>
+</g>
+<g >
+<title>mult (2,322,432 total_cycle_fm_wc, 0.04%)</title><rect x="268.8" y="53" width="0.4" height="15.0" fill="rgb(206,7,1)" rx="2" ry="2" />
+<text  x="271.76" y="63.5" ></text>
+</g>
+<g >
+<title>mod_reduce_rescale (11,714,560 total_cycle_fm_wc, 0.18%)</title><rect x="253.7" y="117" width="2.1" height="15.0" fill="rgb(238,153,36)" rx="2" ry="2" />
+<text  x="256.66" y="127.5" ></text>
+</g>
+<g >
+<title>ntt (1,118,208 total_cycle_fm_wc, 0.02%)</title><rect x="1099.0" y="117" width="0.2" height="15.0" fill="rgb(254,226,54)" rx="2" ry="2" />
+<text  x="1102.02" y="127.5" ></text>
+</g>
+<g >
+<title>ntt_common (4,386,816 total_cycle_fm_wc, 0.07%)</title><rect x="1167.7" y="85" width="0.8" height="15.0" fill="rgb(248,198,47)" rx="2" ry="2" />
+<text  x="1170.71" y="95.5" ></text>
+</g>
+<g >
+<title>basis_convert (36,900,864 total_cycle_fm_wc, 0.58%)</title><rect x="521.6" y="85" width="6.8" height="15.0" fill="rgb(208,15,3)" rx="2" ry="2" />
+<text  x="524.64" y="95.5" ></text>
+</g>
+<g >
+<title>double_multiply (24,203,264 total_cycle_fm_wc, 0.38%)</title><rect x="227.2" y="133" width="4.5" height="15.0" fill="rgb(209,21,5)" rx="2" ry="2" />
+<text  x="230.21" y="143.5" ></text>
+</g>
+<g >
+<title>key_switch_hoisting (10,567,680 total_cycle_fm_wc, 0.16%)</title><rect x="14.5" y="117" width="2.0" height="15.0" fill="rgb(246,191,45)" rx="2" ry="2" />
+<text  x="17.52" y="127.5" ></text>
+</g>
+<g >
+<title>key_switch_hoisting (76,763,136 total_cycle_fm_wc, 1.20%)</title><rect x="18.8" y="85" width="14.2" height="15.0" fill="rgb(246,191,45)" rx="2" ry="2" />
+<text  x="21.84" y="95.5" ></text>
+</g>
+<g >
+<title>ntt_common (41,988,096 total_cycle_fm_wc, 0.65%)</title><rect x="1091.0" y="69" width="7.7" height="15.0" fill="rgb(248,198,47)" rx="2" ry="2" />
+<text  x="1094.00" y="79.5" ></text>
+</g>
+<g >
+<title>add (6,411,264 total_cycle_fm_wc, 0.10%)</title><rect x="256.2" y="117" width="1.2" height="15.0" fill="rgb(244,183,43)" rx="2" ry="2" />
+<text  x="259.19" y="127.5" ></text>
+</g>
+<g >
+<title>mult (559,104 total_cycle_fm_wc, 0.01%)</title><rect x="269.3" y="53" width="0.1" height="15.0" fill="rgb(206,7,1)" rx="2" ry="2" />
+<text  x="272.29" y="63.5" ></text>
+</g>
+<g >
+<title>ntt_common (1,488,384 total_cycle_fm_wc, 0.02%)</title><rect x="15.4" y="69" width="0.2" height="15.0" fill="rgb(248,198,47)" rx="2" ry="2" />
+<text  x="18.35" y="79.5" ></text>
+</g>
+<g >
+<title>mod_reduce_rescale (5,750,784 total_cycle_fm_wc, 0.09%)</title><rect x="398.8" y="117" width="1.1" height="15.0" fill="rgb(238,153,36)" rx="2" ry="2" />
+<text  x="401.81" y="127.5" ></text>
+</g>
+<g >
+<title>multiply_plain (933,888 total_cycle_fm_wc, 0.01%)</title><rect x="396.4" y="101" width="0.2" height="15.0" fill="rgb(225,92,22)" rx="2" ry="2" />
+<text  x="399.43" y="111.5" ></text>
+</g>
+<g >
+<title>key_switch_inner_product (1,187,840 total_cycle_fm_wc, 0.02%)</title><rect x="236.4" y="101" width="0.3" height="15.0" fill="rgb(240,163,39)" rx="2" ry="2" />
+<text  x="239.44" y="111.5" ></text>
+</g>
+<g >
+<title>mult (2,162,688 total_cycle_fm_wc, 0.03%)</title><rect x="233.3" y="117" width="0.4" height="15.0" fill="rgb(206,7,1)" rx="2" ry="2" />
+<text  x="236.30" y="127.5" ></text>
+</g>
+<g >
+<title>key_switch (136,801,280 total_cycle_fm_wc, 2.13%)</title><rect x="18.8" y="101" width="25.1" height="15.0" fill="rgb(223,87,20)" rx="2" ry="2" />
+<text  x="21.76" y="111.5" >k..</text>
+</g>
+<g >
+<title>mult (847,872 total_cycle_fm_wc, 0.01%)</title><rect x="1098.7" y="117" width="0.2" height="15.0" fill="rgb(206,7,1)" rx="2" ry="2" />
+<text  x="1101.72" y="127.5" ></text>
+</g>
+<g >
+<title>ntt_common (1,096,704 total_cycle_fm_wc, 0.02%)</title><rect x="1099.0" y="101" width="0.2" height="15.0" fill="rgb(248,198,47)" rx="2" ry="2" />
+<text  x="1102.02" y="111.5" ></text>
+</g>
+<g >
+<title>ntt_common (72,382,464 total_cycle_fm_wc, 1.13%)</title><rect x="533.0" y="69" width="13.3" height="15.0" fill="rgb(248,198,47)" rx="2" ry="2" />
+<text  x="535.98" y="79.5" ></text>
+</g>
+<g >
+<title>ntt_common (5,379,072 total_cycle_fm_wc, 0.08%)</title><rect x="224.6" y="53" width="0.9" height="15.0" fill="rgb(248,198,47)" rx="2" ry="2" />
+<text  x="227.56" y="63.5" ></text>
+</g>
+<g >
+<title>ntt (26,517,504 total_cycle_fm_wc, 0.41%)</title><rect x="213.5" y="69" width="4.9" height="15.0" fill="rgb(254,226,54)" rx="2" ry="2" />
+<text  x="216.49" y="79.5" ></text>
+</g>
+<g >
+<title>key_switch_inner_product (4,587,520 total_cycle_fm_wc, 0.07%)</title><rect x="1179.1" y="117" width="0.8" height="15.0" fill="rgb(240,163,39)" rx="2" ry="2" />
+<text  x="1182.06" y="127.5" ></text>
+</g>
+<g >
+<title>key_switch_inner_product (1,556,480 total_cycle_fm_wc, 0.02%)</title><rect x="396.3" y="117" width="0.3" height="15.0" fill="rgb(240,163,39)" rx="2" ry="2" />
+<text  x="399.32" y="127.5" ></text>
+</g>
+<g >
+<title>ntt_common (2,820,096 total_cycle_fm_wc, 0.04%)</title><rect x="16.5" y="85" width="0.5" height="15.0" fill="rgb(248,198,47)" rx="2" ry="2" />
+<text  x="19.49" y="95.5" ></text>
+</g>
+<g >
+<title>add (1,019,904 total_cycle_fm_wc, 0.02%)</title><rect x="206.1" y="69" width="0.2" height="15.0" fill="rgb(244,183,43)" rx="2" ry="2" />
+<text  x="209.14" y="79.5" ></text>
+</g>
+<g >
+<title>mod_down (8,036,352 total_cycle_fm_wc, 0.13%)</title><rect x="229.5" y="101" width="1.5" height="15.0" fill="rgb(240,162,38)" rx="2" ry="2" />
+<text  x="232.51" y="111.5" ></text>
+</g>
+<g >
+<title>multiply_plain (2,752,512 total_cycle_fm_wc, 0.04%)</title><rect x="1179.4" y="101" width="0.5" height="15.0" fill="rgb(225,92,22)" rx="2" ry="2" />
+<text  x="1182.39" y="111.5" ></text>
+</g>
+<g >
+<title>ntt (11,714,560 total_cycle_fm_wc, 0.18%)</title><rect x="251.5" y="85" width="2.2" height="15.0" fill="rgb(254,226,54)" rx="2" ry="2" />
+<text  x="254.50" y="95.5" ></text>
+</g>
+<g >
+<title>iteration (4,332,902,400 total_cycle_fm_wc, 67.53%)</title><rect x="393.2" y="165" width="796.8" height="15.0" fill="rgb(215,46,11)" rx="2" ry="2" />
+<text  x="396.17" y="175.5" >iteration</text>
+</g>
+<g >
+<title>basis_convert (13,487,104 total_cycle_fm_wc, 0.21%)</title><rect x="385.6" y="69" width="2.5" height="15.0" fill="rgb(208,15,3)" rx="2" ry="2" />
+<text  x="388.61" y="79.5" ></text>
+</g>
+<g >
+<title>multiply (84,326,400 total_cycle_fm_wc, 1.31%)</title><rect x="240.6" y="133" width="15.5" height="15.0" fill="rgb(225,94,22)" rx="2" ry="2" />
+<text  x="243.59" y="143.5" ></text>
+</g>
+<g >
+<title>ntt_common (7,781,376 total_cycle_fm_wc, 0.12%)</title><rect x="38.5" y="37" width="1.5" height="15.0" fill="rgb(248,198,47)" rx="2" ry="2" />
+<text  x="41.52" y="47.5" ></text>
+</g>
+<g >
+<title>baby_step_basis (43,820,032 total_cycle_fm_wc, 0.68%)</title><rect x="219.1" y="149" width="8.1" height="15.0" fill="rgb(219,68,16)" rx="2" ry="2" />
+<text  x="222.13" y="159.5" ></text>
+</g>
+<g >
+<title>ntt (1,437,696 total_cycle_fm_wc, 0.02%)</title><rect x="10.4" y="69" width="0.2" height="15.0" fill="rgb(254,226,54)" rx="2" ry="2" />
+<text  x="13.35" y="79.5" ></text>
+</g>
+<g >
+<title>intt (2,396,160 total_cycle_fm_wc, 0.04%)</title><rect x="1112.3" y="101" width="0.5" height="15.0" fill="rgb(225,96,23)" rx="2" ry="2" />
+<text  x="1115.35" y="111.5" ></text>
+</g>
+<g >
+<title>add (2,269,184 total_cycle_fm_wc, 0.04%)</title><rect x="33.0" y="53" width="0.4" height="15.0" fill="rgb(244,183,43)" rx="2" ry="2" />
+<text  x="35.95" y="63.5" ></text>
+</g>
+<g >
+<title>ntt_common (16,607,232 total_cycle_fm_wc, 0.26%)</title><rect x="1183.3" y="69" width="3.1" height="15.0" fill="rgb(248,198,47)" rx="2" ry="2" />
+<text  x="1186.33" y="79.5" ></text>
+</g>
+<g >
+<title>mult (712,704 total_cycle_fm_wc, 0.01%)</title><rect x="236.5" y="69" width="0.2" height="15.0" fill="rgb(206,7,1)" rx="2" ry="2" />
+<text  x="239.53" y="79.5" ></text>
+</g>
+<g >
+<title>fft (1,122,141,184 total_cycle_fm_wc, 17.49%)</title><rect x="12.8" y="149" width="206.3" height="15.0" fill="rgb(246,190,45)" rx="2" ry="2" />
+<text  x="15.77" y="159.5" >fft</text>
+</g>
+<g >
+<title>add (581,632 total_cycle_fm_wc, 0.01%)</title><rect x="222.8" y="85" width="0.1" height="15.0" fill="rgb(244,183,43)" rx="2" ry="2" />
+<text  x="225.79" y="95.5" ></text>
+</g>
+<g >
+<title>fft_inner_bsgs (1,122,141,184 total_cycle_fm_wc, 17.49%)</title><rect x="12.8" y="133" width="206.3" height="15.0" fill="rgb(246,190,45)" rx="2" ry="2" />
+<text  x="15.77" y="143.5" >fft_inner_bsgs</text>
+</g>
+<g >
+<title>ntt (5,670,912 total_cycle_fm_wc, 0.09%)</title><rect x="239.5" y="117" width="1.1" height="15.0" fill="rgb(254,226,54)" rx="2" ry="2" />
+<text  x="242.55" y="127.5" ></text>
+</g>
+<g >
+<title>ntt (2,875,392 total_cycle_fm_wc, 0.04%)</title><rect x="1169.3" y="117" width="0.5" height="15.0" fill="rgb(254,226,54)" rx="2" ry="2" />
+<text  x="1172.29" y="127.5" ></text>
+</g>
+<g >
+<title>ntt_common (22,247,424 total_cycle_fm_wc, 0.35%)</title><rect x="264.4" y="37" width="4.1" height="15.0" fill="rgb(248,198,47)" rx="2" ry="2" />
+<text  x="267.38" y="47.5" ></text>
+</g>
+<g >
+<title>ntt_common (5,326,848 total_cycle_fm_wc, 0.08%)</title><rect x="398.9" y="85" width="1.0" height="15.0" fill="rgb(248,198,47)" rx="2" ry="2" />
+<text  x="401.88" y="95.5" ></text>
+</g>
+<g >
+<title>key_switch_inner_product (2,906,259,456 total_cycle_fm_wc, 45.29%)</title><rect x="546.3" y="117" width="534.5" height="15.0" fill="rgb(240,163,39)" rx="2" ry="2" />
+<text  x="549.29" y="127.5" >key_switch_inner_product</text>
+</g>
+<g >
+<title>mult (2,211,840 total_cycle_fm_wc, 0.03%)</title><rect x="1166.4" y="101" width="0.5" height="15.0" fill="rgb(206,7,1)" rx="2" ry="2" />
+<text  x="1169.45" y="111.5" ></text>
+</g>
+<g >
+<title>ntt (5,750,784 total_cycle_fm_wc, 0.09%)</title><rect x="397.7" y="85" width="1.1" height="15.0" fill="rgb(254,226,54)" rx="2" ry="2" />
+<text  x="400.75" y="95.5" ></text>
+</g>
+<g >
+<title>mod_raise (12,687,360 total_cycle_fm_wc, 0.20%)</title><rect x="1111.8" y="117" width="2.3" height="15.0" fill="rgb(246,188,45)" rx="2" ry="2" />
+<text  x="1114.78" y="127.5" ></text>
+</g>
+<g >
+<title>ntt (16,932,864 total_cycle_fm_wc, 0.26%)</title><rect x="1183.3" y="85" width="3.1" height="15.0" fill="rgb(254,226,54)" rx="2" ry="2" />
+<text  x="1186.27" y="95.5" ></text>
+</g>
+<g >
+<title>add (9,520,128 total_cycle_fm_wc, 0.15%)</title><rect x="12.8" y="117" width="1.7" height="15.0" fill="rgb(244,183,43)" rx="2" ry="2" />
+<text  x="15.77" y="127.5" ></text>
+</g>
+<g >
+<title>key_switch (5,820,928 total_cycle_fm_wc, 0.09%)</title><rect x="10.0" y="117" width="1.1" height="15.0" fill="rgb(223,87,20)" rx="2" ry="2" />
+<text  x="13.01" y="127.5" ></text>
+</g>
+<g >
+<title>add (1,646,592 total_cycle_fm_wc, 0.03%)</title><rect x="1080.8" y="85" width="0.3" height="15.0" fill="rgb(244,183,43)" rx="2" ry="2" />
+<text  x="1083.75" y="95.5" ></text>
+</g>
+<g >
+<title>mult (6,411,264 total_cycle_fm_wc, 0.10%)</title><rect x="258.9" y="101" width="1.2" height="15.0" fill="rgb(206,7,1)" rx="2" ry="2" />
+<text  x="261.89" y="111.5" ></text>
+</g>
+<g >
+<title>automorph (454,164,480 total_cycle_fm_wc, 7.08%)</title><rect x="301.8" y="101" width="83.6" height="15.0" fill="rgb(211,31,7)" rx="2" ry="2" />
+<text  x="304.83" y="111.5" >automorph</text>
+</g>
+<g >
+<title>mod_down (13,547,520 total_cycle_fm_wc, 0.21%)</title><rect x="223.1" y="101" width="2.4" height="15.0" fill="rgb(240,162,38)" rx="2" ry="2" />
+<text  x="226.05" y="111.5" ></text>
+</g>
+<g >
+<title>mod_reduce_rescale (5,857,280 total_cycle_fm_wc, 0.09%)</title><rect x="239.5" y="133" width="1.1" height="15.0" fill="rgb(238,153,36)" rx="2" ry="2" />
+<text  x="242.52" y="143.5" ></text>
+</g>
+<g >
+<title>mod_raise (39,585,792 total_cycle_fm_wc, 0.62%)</title><rect x="240.7" y="101" width="7.3" height="15.0" fill="rgb(246,188,45)" rx="2" ry="2" />
+<text  x="243.68" y="111.5" ></text>
+</g>
+<g >
+<title>mod_down_reduce (38,274,048 total_cycle_fm_wc, 0.60%)</title><rect x="385.6" y="85" width="7.0" height="15.0" fill="rgb(244,179,42)" rx="2" ry="2" />
+<text  x="388.61" y="95.5" ></text>
+</g>
+<g >
+<title>mod_reduce_rescale (3,035,136 total_cycle_fm_wc, 0.05%)</title><rect x="1169.3" y="133" width="0.5" height="15.0" fill="rgb(238,153,36)" rx="2" ry="2" />
+<text  x="1172.26" y="143.5" ></text>
+</g>
+<g >
+<title>mult (651,264 total_cycle_fm_wc, 0.01%)</title><rect x="1189.8" y="101" width="0.1" height="15.0" fill="rgb(206,7,1)" rx="2" ry="2" />
+<text  x="1192.79" y="111.5" ></text>
+</g>
+<g >
+<title>mod_raise (19,267,584 total_cycle_fm_wc, 0.30%)</title><rect x="219.2" y="85" width="3.6" height="15.0" fill="rgb(246,188,45)" rx="2" ry="2" />
+<text  x="222.24" y="95.5" ></text>
+</g>
+<g >
+<title>ntt (8,466,432 total_cycle_fm_wc, 0.13%)</title><rect x="221.2" y="69" width="1.6" height="15.0" fill="rgb(254,226,54)" rx="2" ry="2" />
+<text  x="224.23" y="79.5" ></text>
+</g>
+<g >
+<title>ntt_common (6,815,232 total_cycle_fm_wc, 0.11%)</title><rect x="235.2" y="53" width="1.2" height="15.0" fill="rgb(248,198,47)" rx="2" ry="2" />
+<text  x="238.19" y="63.5" ></text>
+</g>
+<g >
+<title>mod_down_divide (901,120 total_cycle_fm_wc, 0.01%)</title><rect x="248.5" y="101" width="0.2" height="15.0" fill="rgb(213,38,9)" rx="2" ry="2" />
+<text  x="251.53" y="111.5" ></text>
+</g>
+<g >
+<title>mod_reduce_rescale (4,472,832 total_cycle_fm_wc, 0.07%)</title><rect x="238.5" y="101" width="0.9" height="15.0" fill="rgb(238,153,36)" rx="2" ry="2" />
+<text  x="241.55" y="111.5" ></text>
+</g>
+<g >
+<title>intt (1,703,936 total_cycle_fm_wc, 0.03%)</title><rect x="237.4" y="69" width="0.3" height="15.0" fill="rgb(225,96,23)" rx="2" ry="2" />
+<text  x="240.41" y="79.5" ></text>
+</g>
+<g >
+<title>ntt_common (6,763,008 total_cycle_fm_wc, 0.11%)</title><rect x="388.1" y="53" width="1.3" height="15.0" fill="rgb(248,198,47)" rx="2" ry="2" />
+<text  x="391.11" y="63.5" ></text>
+</g>
+<g >
+<title>ntt_common (4,386,816 total_cycle_fm_wc, 0.07%)</title><rect x="237.7" y="53" width="0.8" height="15.0" fill="rgb(248,198,47)" rx="2" ry="2" />
+<text  x="240.74" y="63.5" ></text>
+</g>
+<g >
+<title>ntt (33,226,752 total_cycle_fm_wc, 0.52%)</title><rect x="26.8" y="53" width="6.2" height="15.0" fill="rgb(254,226,54)" rx="2" ry="2" />
+<text  x="29.84" y="63.5" ></text>
+</g>
+<g >
+<title>add (1,474,560 total_cycle_fm_wc, 0.02%)</title><rect x="1114.1" y="101" width="0.3" height="15.0" fill="rgb(244,183,43)" rx="2" ry="2" />
+<text  x="1117.11" y="111.5" ></text>
+</g>
+<g >
+<title>add (14,942,208 total_cycle_fm_wc, 0.23%)</title><rect x="546.3" y="101" width="2.7" height="15.0" fill="rgb(244,183,43)" rx="2" ry="2" />
+<text  x="549.29" y="111.5" ></text>
+</g>
+<g >
+<title>mod_down_reduce (52,291,584 total_cycle_fm_wc, 0.81%)</title><rect x="34.3" y="69" width="9.6" height="15.0" fill="rgb(244,179,42)" rx="2" ry="2" />
+<text  x="37.30" y="79.5" ></text>
+</g>
+<g >
+<title>key_switch_hoisting (6,273,024 total_cycle_fm_wc, 0.10%)</title><rect x="257.4" y="117" width="1.1" height="15.0" fill="rgb(246,191,45)" rx="2" ry="2" />
+<text  x="260.37" y="127.5" ></text>
+</g>
+<g >
+<title>ntt_common (4,334,592 total_cycle_fm_wc, 0.07%)</title><rect x="250.7" y="69" width="0.8" height="15.0" fill="rgb(248,198,47)" rx="2" ry="2" />
+<text  x="253.70" y="79.5" ></text>
+</g>
+<g >
+<title>add (622,592 total_cycle_fm_wc, 0.01%)</title><rect x="396.3" y="101" width="0.1" height="15.0" fill="rgb(244,183,43)" rx="2" ry="2" />
+<text  x="399.32" y="111.5" ></text>
+</g>
+<g >
+<title>ntt (73,801,728 total_cycle_fm_wc, 1.15%)</title><rect x="532.7" y="85" width="13.6" height="15.0" fill="rgb(254,226,54)" rx="2" ry="2" />
+<text  x="535.72" y="95.5" ></text>
+</g>
+<g >
+<title>add (10,014,720 total_cycle_fm_wc, 0.16%)</title><rect x="400.0" y="117" width="1.9" height="15.0" fill="rgb(244,183,43)" rx="2" ry="2" />
+<text  x="403.05" y="127.5" ></text>
+</g>
+<g >
+<title>slot_to_coeff (744,893,440 total_cycle_fm_wc, 11.61%)</title><rect x="256.2" y="165" width="137.0" height="15.0" fill="rgb(235,142,34)" rx="2" ry="2" />
+<text  x="259.18" y="175.5" >slot_to_coeff</text>
+</g>
+<g >
+<title>ntt_common (4,465,152 total_cycle_fm_wc, 0.07%)</title><rect x="15.6" y="69" width="0.9" height="15.0" fill="rgb(248,198,47)" rx="2" ry="2" />
+<text  x="18.64" y="79.5" ></text>
+</g>
+<g >
+<title>mod_reduce_rescale (1,996,800 total_cycle_fm_wc, 0.03%)</title><rect x="258.5" y="117" width="0.4" height="15.0" fill="rgb(238,153,36)" rx="2" ry="2" />
+<text  x="261.52" y="127.5" ></text>
+</g>
+<g >
+<title>mod_down_reduce (94,412,800 total_cycle_fm_wc, 1.47%)</title><rect x="1081.4" y="101" width="17.3" height="15.0" fill="rgb(244,179,42)" rx="2" ry="2" />
+<text  x="1084.36" y="111.5" ></text>
+</g>
+<g >
+<title>key_switch_inner_product (3,870,720 total_cycle_fm_wc, 0.06%)</title><rect x="268.5" y="85" width="0.7" height="15.0" fill="rgb(240,163,39)" rx="2" ry="2" />
+<text  x="271.47" y="95.5" ></text>
+</g>
+<g >
+<title>add (622,592 total_cycle_fm_wc, 0.01%)</title><rect x="396.3" y="85" width="0.1" height="15.0" fill="rgb(244,183,43)" rx="2" ry="2" />
+<text  x="399.32" y="95.5" ></text>
+</g>
+<g >
+<title>add (14,942,208 total_cycle_fm_wc, 0.23%)</title><rect x="546.3" y="85" width="2.7" height="15.0" fill="rgb(244,183,43)" rx="2" ry="2" />
+<text  x="549.29" y="95.5" ></text>
+</g>
+<g >
+<title>ntt_common (5,953,536 total_cycle_fm_wc, 0.09%)</title><rect x="243.5" y="69" width="1.1" height="15.0" fill="rgb(248,198,47)" rx="2" ry="2" />
+<text  x="246.53" y="79.5" ></text>
+</g>
+<g >
+<title>ntt_common (2,350,080 total_cycle_fm_wc, 0.04%)</title><rect x="1112.4" y="85" width="0.4" height="15.0" fill="rgb(248,198,47)" rx="2" ry="2" />
+<text  x="1115.36" y="95.5" ></text>
+</g>
+<g >
+<title>double_multiply (31,130,624 total_cycle_fm_wc, 0.49%)</title><rect x="233.7" y="133" width="5.7" height="15.0" fill="rgb(209,21,5)" rx="2" ry="2" />
+<text  x="236.71" y="143.5" ></text>
+</g>
+<g >
+<title>ntt_common (6,684,672 total_cycle_fm_wc, 0.10%)</title><rect x="232.1" y="101" width="1.2" height="15.0" fill="rgb(248,198,47)" rx="2" ry="2" />
+<text  x="235.07" y="111.5" ></text>
+</g>
+<g >
+<title>mult (1,646,592 total_cycle_fm_wc, 0.03%)</title><rect x="1081.1" y="85" width="0.3" height="15.0" fill="rgb(206,7,1)" rx="2" ry="2" />
+<text  x="1084.06" y="95.5" ></text>
+</g>
+<g >
+<title>mod_raise (49,594,368 total_cycle_fm_wc, 0.77%)</title><rect x="1169.9" y="101" width="9.2" height="15.0" fill="rgb(246,188,45)" rx="2" ry="2" />
+<text  x="1172.93" y="111.5" ></text>
+</g>
+<g >
+<title>intt (6,070,272 total_cycle_fm_wc, 0.09%)</title><rect x="243.5" y="85" width="1.1" height="15.0" fill="rgb(225,96,23)" rx="2" ry="2" />
+<text  x="246.50" y="95.5" ></text>
+</g>
+<g >
+<title>key_switch_hoisting (19,267,584 total_cycle_fm_wc, 0.30%)</title><rect x="219.2" y="101" width="3.6" height="15.0" fill="rgb(246,191,45)" rx="2" ry="2" />
+<text  x="222.24" y="111.5" ></text>
+</g>
+<g >
+<title>intt (1,277,952 total_cycle_fm_wc, 0.02%)</title><rect x="230.1" y="69" width="0.3" height="15.0" fill="rgb(225,96,23)" rx="2" ry="2" />
+<text  x="233.14" y="79.5" ></text>
+</g>
+<g >
+<title>ntt_common (14,257,152 total_cycle_fm_wc, 0.22%)</title><rect x="272.5" y="37" width="2.6" height="15.0" fill="rgb(248,198,47)" rx="2" ry="2" />
+<text  x="275.47" y="47.5" ></text>
+</g>
+<g >
+<title>intt (21,938,176 total_cycle_fm_wc, 0.34%)</title><rect x="1086.8" y="85" width="4.0" height="15.0" fill="rgb(225,96,23)" rx="2" ry="2" />
+<text  x="1089.82" y="95.5" ></text>
+</g>
+<g >
+<title>compute_tf (638,976 total_cycle_fm_wc, 0.01%)</title><rect x="26.8" y="37" width="0.2" height="15.0" fill="rgb(249,206,49)" rx="2" ry="2" />
+<text  x="29.84" y="47.5" ></text>
+</g>
+<g >
+<title>ntt_common (1,018,368 total_cycle_fm_wc, 0.02%)</title><rect x="1099.2" y="101" width="0.2" height="15.0" fill="rgb(248,198,47)" rx="2" ry="2" />
+<text  x="1102.24" y="111.5" ></text>
+</g>
+<g >
+<title>ntt_common (21,516,288 total_cycle_fm_wc, 0.34%)</title><rect x="1086.9" y="69" width="3.9" height="15.0" fill="rgb(248,198,47)" rx="2" ry="2" />
+<text  x="1089.89" y="79.5" ></text>
+</g>
+<g >
+<title>ntt (26,836,992 total_cycle_fm_wc, 0.42%)</title><rect x="1174.1" y="85" width="5.0" height="15.0" fill="rgb(254,226,54)" rx="2" ry="2" />
+<text  x="1177.12" y="95.5" ></text>
+</g>
+<g >
+<title>ntt_common (11,489,280 total_cycle_fm_wc, 0.18%)</title><rect x="251.5" y="69" width="2.2" height="15.0" fill="rgb(248,198,47)" rx="2" ry="2" />
+<text  x="254.54" y="79.5" ></text>
+</g>
+<g >
+<title>ntt_common (3,055,104 total_cycle_fm_wc, 0.05%)</title><rect x="258.0" y="69" width="0.5" height="15.0" fill="rgb(248,198,47)" rx="2" ry="2" />
+<text  x="260.96" y="79.5" ></text>
+</g>
+<g >
+<title>mod_down (27,895,808 total_cycle_fm_wc, 0.43%)</title><rect x="248.5" y="117" width="5.2" height="15.0" fill="rgb(240,162,38)" rx="2" ry="2" />
+<text  x="251.53" y="127.5" ></text>
+</g>
+<g >
+<title>coeff_to_slot (1,137,208,832 total_cycle_fm_wc, 17.72%)</title><rect x="10.0" y="165" width="209.1" height="15.0" fill="rgb(235,142,34)" rx="2" ry="2" />
+<text  x="13.00" y="175.5" >coeff_to_slot</text>
+</g>
+<g >
+<title>ntt (6,948,864 total_cycle_fm_wc, 0.11%)</title><rect x="235.2" y="69" width="1.2" height="15.0" fill="rgb(254,226,54)" rx="2" ry="2" />
+<text  x="238.17" y="79.5" ></text>
+</g>
+<g >
+<title>multiply_plain (4,187,136 total_cycle_fm_wc, 0.07%)</title><rect x="218.4" y="101" width="0.7" height="15.0" fill="rgb(225,92,22)" rx="2" ry="2" />
+<text  x="221.36" y="111.5" ></text>
+</g>
+<g >
+<title>rotate_sum (3,800,018,944 total_cycle_fm_wc, 59.22%)</title><rect x="400.0" y="133" width="698.9" height="15.0" fill="rgb(215,49,11)" rx="2" ry="2" />
+<text  x="403.05" y="143.5" >rotate_sum</text>
+</g>
+<g >
+<title>intt (7,507,968 total_cycle_fm_wc, 0.12%)</title><rect x="262.9" y="53" width="1.4" height="15.0" fill="rgb(225,96,23)" rx="2" ry="2" />
+<text  x="265.92" y="63.5" ></text>
+</g>
+<g >
+<title>ntt_common (1,410,048 total_cycle_fm_wc, 0.02%)</title><rect x="10.4" y="53" width="0.2" height="15.0" fill="rgb(248,198,47)" rx="2" ry="2" />
+<text  x="13.36" y="63.5" ></text>
+</g>
+<g >
+<title>mod_down_reduce (1,794,048 total_cycle_fm_wc, 0.03%)</title><rect x="1098.9" y="133" width="0.3" height="15.0" fill="rgb(244,179,42)" rx="2" ry="2" />
+<text  x="1101.89" y="143.5" ></text>
+</g>
+<g >
+<title>key_switch_inner_product (5,672,960 total_cycle_fm_wc, 0.09%)</title><rect x="33.0" y="85" width="1.0" height="15.0" fill="rgb(240,163,39)" rx="2" ry="2" />
+<text  x="35.95" y="95.5" ></text>
+</g>
+<g >
+<title>mod_reduce_rescale (5,484,544 total_cycle_fm_wc, 0.09%)</title><rect x="225.5" y="101" width="1.1" height="15.0" fill="rgb(238,153,36)" rx="2" ry="2" />
+<text  x="228.55" y="111.5" ></text>
+</g>
+<g >
+<title>ntt_common (7,050,240 total_cycle_fm_wc, 0.11%)</title><rect x="1112.8" y="85" width="1.3" height="15.0" fill="rgb(248,198,47)" rx="2" ry="2" />
+<text  x="1115.81" y="95.5" ></text>
+</g>
+<g >
+<title>multiply (109,291,520 total_cycle_fm_wc, 1.70%)</title><rect x="1169.8" y="133" width="20.1" height="15.0" fill="rgb(225,94,22)" rx="2" ry="2" />
+<text  x="1172.82" y="143.5" ></text>
+</g>
+<g >
+<title>ntt_common (8,930,304 total_cycle_fm_wc, 0.14%)</title><rect x="394.7" y="69" width="1.6" height="15.0" fill="rgb(248,198,47)" rx="2" ry="2" />
+<text  x="397.67" y="79.5" ></text>
+</g>
+<g >
+<title>ntt (5,431,296 total_cycle_fm_wc, 0.08%)</title><rect x="398.9" y="101" width="1.0" height="15.0" fill="rgb(254,226,54)" rx="2" ry="2" />
+<text  x="401.87" y="111.5" ></text>
+</g>
+<g >
+<title>mod_raise (11,409,408 total_cycle_fm_wc, 0.18%)</title><rect x="227.3" y="85" width="2.0" height="15.0" fill="rgb(246,188,45)" rx="2" ry="2" />
+<text  x="230.25" y="95.5" ></text>
+</g>
+<g >
+<title>mod_raise (134,025,216 total_cycle_fm_wc, 2.09%)</title><rect x="521.6" y="101" width="24.7" height="15.0" fill="rgb(246,188,45)" rx="2" ry="2" />
+<text  x="524.64" y="111.5" >m..</text>
+</g>
+<g >
+<title>eval_sine (201,456,640 total_cycle_fm_wc, 3.14%)</title><rect x="219.1" y="165" width="37.1" height="15.0" fill="rgb(226,99,23)" rx="2" ry="2" />
+<text  x="222.13" y="175.5" >eva..</text>
+</g>
+<g >
+<title>add (1,622,016 total_cycle_fm_wc, 0.03%)</title><rect x="231.7" y="133" width="0.3" height="15.0" fill="rgb(244,183,43)" rx="2" ry="2" />
+<text  x="234.66" y="143.5" ></text>
+</g>
+<g >
+<title>basis_convert (15,384,576 total_cycle_fm_wc, 0.24%)</title><rect x="240.7" y="85" width="2.8" height="15.0" fill="rgb(208,15,3)" rx="2" ry="2" />
+<text  x="243.68" y="95.5" ></text>
+</g>
+<g >
+<title>mod_raise (3,262,464 total_cycle_fm_wc, 0.05%)</title><rect x="10.0" y="85" width="0.6" height="15.0" fill="rgb(246,188,45)" rx="2" ry="2" />
+<text  x="13.02" y="95.5" ></text>
+</g>
+<g >
+<title>mult (3,403,776 total_cycle_fm_wc, 0.05%)</title><rect x="33.4" y="53" width="0.6" height="15.0" fill="rgb(206,7,1)" rx="2" ry="2" />
+<text  x="36.37" y="63.5" ></text>
+</g>
+<g >
+<title>ntt_common (2,820,096 total_cycle_fm_wc, 0.04%)</title><rect x="1169.3" y="101" width="0.5" height="15.0" fill="rgb(248,198,47)" rx="2" ry="2" />
+<text  x="1172.30" y="111.5" ></text>
+</g>
+<g >
+<title>mult (1,019,904 total_cycle_fm_wc, 0.02%)</title><rect x="206.3" y="69" width="0.2" height="15.0" fill="rgb(206,7,1)" rx="2" ry="2" />
+<text  x="209.33" y="79.5" ></text>
+</g>
+<g >
+<title>ntt (2,662,400 total_cycle_fm_wc, 0.04%)</title><rect x="226.7" y="117" width="0.5" height="15.0" fill="rgb(254,226,54)" rx="2" ry="2" />
+<text  x="229.67" y="127.5" ></text>
+</g>
+<g >
+<title>multiply_plain (872,448 total_cycle_fm_wc, 0.01%)</title><rect x="222.9" y="85" width="0.2" height="15.0" fill="rgb(225,92,22)" rx="2" ry="2" />
+<text  x="225.89" y="95.5" ></text>
+</g>
+<g >
+<title>ntt_common (2,820,096 total_cycle_fm_wc, 0.04%)</title><rect x="220.7" y="53" width="0.5" height="15.0" fill="rgb(248,198,47)" rx="2" ry="2" />
+<text  x="223.71" y="63.5" ></text>
+</g>
+<g >
+<title>compute_tf (823,296 total_cycle_fm_wc, 0.01%)</title><rect x="1090.8" y="69" width="0.2" height="15.0" fill="rgb(249,206,49)" rx="2" ry="2" />
+<text  x="1093.85" y="79.5" ></text>
+</g>
+<g >
+<title>ntt (21,565,440 total_cycle_fm_wc, 0.34%)</title><rect x="40.0" y="53" width="3.9" height="15.0" fill="rgb(254,226,54)" rx="2" ry="2" />
+<text  x="42.95" y="63.5" ></text>
+</g>
+<g >
+<title>ntt (1,038,336 total_cycle_fm_wc, 0.02%)</title><rect x="1099.2" y="117" width="0.2" height="15.0" fill="rgb(254,226,54)" rx="2" ry="2" />
+<text  x="1102.24" y="127.5" ></text>
+</g>
+<g >
+<title>mod_down_divide (1,302,528 total_cycle_fm_wc, 0.02%)</title><rect x="1179.9" y="101" width="0.2" height="15.0" fill="rgb(213,38,9)" rx="2" ry="2" />
+<text  x="1182.90" y="111.5" ></text>
+</g>
+<g >
+<title>mod_down (32,151,552 total_cycle_fm_wc, 0.50%)</title><rect x="269.2" y="85" width="5.9" height="15.0" fill="rgb(240,162,38)" rx="2" ry="2" />
+<text  x="272.18" y="95.5" ></text>
+</g>
+<g >
+<title>add (688,128 total_cycle_fm_wc, 0.01%)</title><rect x="385.4" y="69" width="0.1" height="15.0" fill="rgb(244,183,43)" rx="2" ry="2" />
+<text  x="388.35" y="79.5" ></text>
+</g>
+<g >
+<title>rotate_sum (375,666,688 total_cycle_fm_wc, 5.85%)</title><rect x="1099.4" y="149" width="69.1" height="15.0" fill="rgb(215,49,11)" rx="2" ry="2" />
+<text  x="1102.45" y="159.5" >rotate_..</text>
+</g>
+<g >
+<title>partial_multiply_inner (663,552 total_cycle_fm_wc, 0.01%)</title><rect x="399.9" y="117" width="0.1" height="15.0" fill="rgb(221,75,17)" rx="2" ry="2" />
+<text  x="402.88" y="127.5" ></text>
+</g>
+<g >
+<title>rotate (349,137,920 total_cycle_fm_wc, 5.44%)</title><rect x="18.8" y="117" width="64.2" height="15.0" fill="rgb(232,125,30)" rx="2" ry="2" />
+<text  x="21.76" y="127.5" >rotate</text>
+</g>
+<g >
+<title>ntt_common (10,810,368 total_cycle_fm_wc, 0.17%)</title><rect x="24.9" y="37" width="1.9" height="15.0" fill="rgb(248,198,47)" rx="2" ry="2" />
+<text  x="27.85" y="47.5" ></text>
+</g>
+<g >
+<title>basis_convert (1,345,536 total_cycle_fm_wc, 0.02%)</title><rect x="10.0" y="69" width="0.3" height="15.0" fill="rgb(208,15,3)" rx="2" ry="2" />
+<text  x="13.02" y="79.5" ></text>
+</g>
+<g >
+<title>ntt_common (5,091,840 total_cycle_fm_wc, 0.08%)</title><rect x="228.4" y="53" width="0.9" height="15.0" fill="rgb(248,198,47)" rx="2" ry="2" />
+<text  x="231.41" y="63.5" ></text>
+</g>
+<g >
+<title>r_square (31,216,640 total_cycle_fm_wc, 0.49%)</title><rect x="233.7" y="149" width="5.7" height="15.0" fill="rgb(219,65,15)" rx="2" ry="2" />
+<text  x="236.69" y="159.5" ></text>
+</g>
+<g >
+<title>mod_down_reduce (31,033,344 total_cycle_fm_wc, 0.48%)</title><rect x="269.4" y="69" width="5.7" height="15.0" fill="rgb(244,179,42)" rx="2" ry="2" />
+<text  x="272.39" y="79.5" ></text>
+</g>
+<g >
+<title>ntt_common (8,773,632 total_cycle_fm_wc, 0.14%)</title><rect x="1172.5" y="69" width="1.6" height="15.0" fill="rgb(248,198,47)" rx="2" ry="2" />
+<text  x="1175.51" y="79.5" ></text>
+</g>
+<g >
+<title>ntt_common (2,976,768 total_cycle_fm_wc, 0.05%)</title><rect x="394.1" y="69" width="0.5" height="15.0" fill="rgb(248,198,47)" rx="2" ry="2" />
+<text  x="397.09" y="79.5" ></text>
+</g>
+<g >
+<title>add (2,791,424 total_cycle_fm_wc, 0.04%)</title><rect x="83.1" y="85" width="0.5" height="15.0" fill="rgb(244,183,43)" rx="2" ry="2" />
+<text  x="86.06" y="95.5" ></text>
+</g>
+<g >
+<title>ntt_common (26,320,896 total_cycle_fm_wc, 0.41%)</title><rect x="1174.2" y="69" width="4.9" height="15.0" fill="rgb(248,198,47)" rx="2" ry="2" />
+<text  x="1177.22" y="79.5" ></text>
+</g>
+<g >
+<title>ntt (4,552,704 total_cycle_fm_wc, 0.07%)</title><rect x="15.6" y="85" width="0.9" height="15.0" fill="rgb(254,226,54)" rx="2" ry="2" />
+<text  x="18.63" y="95.5" ></text>
+</g>
+<g >
+<title>mod_down_divide (1,658,880 total_cycle_fm_wc, 0.03%)</title><rect x="34.0" y="69" width="0.3" height="15.0" fill="rgb(213,38,9)" rx="2" ry="2" />
+<text  x="37.00" y="79.5" ></text>
+</g>
+<g >
+<title>key_switch_inner_product (1,454,080 total_cycle_fm_wc, 0.02%)</title><rect x="222.8" y="101" width="0.3" height="15.0" fill="rgb(240,163,39)" rx="2" ry="2" />
+<text  x="225.79" y="111.5" ></text>
+</g>
+<g >
+<title>multiply_plain (22,413,312 total_cycle_fm_wc, 0.35%)</title><rect x="1076.6" y="101" width="4.2" height="15.0" fill="rgb(225,92,22)" rx="2" ry="2" />
+<text  x="1079.63" y="111.5" ></text>
+</g>
+<g >
+<title>basis_convert (28,122,112 total_cycle_fm_wc, 0.44%)</title><rect x="206.5" y="69" width="5.2" height="15.0" fill="rgb(208,15,3)" rx="2" ry="2" />
+<text  x="209.52" y="79.5" ></text>
+</g>
+<g >
+<title>add (1,548,288 total_cycle_fm_wc, 0.02%)</title><rect x="268.5" y="69" width="0.3" height="15.0" fill="rgb(244,183,43)" rx="2" ry="2" />
+<text  x="271.47" y="79.5" ></text>
+</g>
+<g >
+<title>intt (8,945,664 total_cycle_fm_wc, 0.14%)</title><rect x="1172.5" y="85" width="1.6" height="15.0" fill="rgb(225,96,23)" rx="2" ry="2" />
+<text  x="1175.47" y="95.5" ></text>
+</g>
+<g >
+<title>multiply_plain (3,403,776 total_cycle_fm_wc, 0.05%)</title><rect x="33.4" y="69" width="0.6" height="15.0" fill="rgb(225,92,22)" rx="2" ry="2" />
+<text  x="36.37" y="79.5" ></text>
+</g>
+<g >
+<title>ntt_common (8,303,616 total_cycle_fm_wc, 0.13%)</title><rect x="221.3" y="53" width="1.5" height="15.0" fill="rgb(248,198,47)" rx="2" ry="2" />
+<text  x="224.26" y="63.5" ></text>
+</g>
+<g >
+<title>ntt_common (32,587,776 total_cycle_fm_wc, 0.51%)</title><rect x="27.0" y="37" width="6.0" height="15.0" fill="rgb(248,198,47)" rx="2" ry="2" />
+<text  x="29.96" y="47.5" ></text>
+</g>
+<g >
+<title>automorph (143,130,624 total_cycle_fm_wc, 2.23%)</title><rect x="275.1" y="85" width="26.3" height="15.0" fill="rgb(211,31,7)" rx="2" ry="2" />
+<text  x="278.10" y="95.5" >a..</text>
+</g>
+<g >
+<title>basis_convert (7,925,760 total_cycle_fm_wc, 0.12%)</title><rect x="219.2" y="69" width="1.5" height="15.0" fill="rgb(208,15,3)" rx="2" ry="2" />
+<text  x="222.24" y="79.5" ></text>
+</g>
+<g >
+<title>ntt (5,191,680 total_cycle_fm_wc, 0.08%)</title><rect x="228.4" y="69" width="0.9" height="15.0" fill="rgb(254,226,54)" rx="2" ry="2" />
+<text  x="231.40" y="79.5" ></text>
+</g>
+<g >
+<title>ntt_common (5,561,856 total_cycle_fm_wc, 0.09%)</title><rect x="239.6" y="101" width="1.0" height="15.0" fill="rgb(248,198,47)" rx="2" ry="2" />
+<text  x="242.57" y="111.5" ></text>
+</g>
+<g >
+<title>add (6,411,264 total_cycle_fm_wc, 0.10%)</title><rect x="256.2" y="101" width="1.2" height="15.0" fill="rgb(244,183,43)" rx="2" ry="2" />
+<text  x="259.19" y="111.5" ></text>
+</g>
+<g >
+<title>ntt (5,484,544 total_cycle_fm_wc, 0.09%)</title><rect x="224.5" y="69" width="1.0" height="15.0" fill="rgb(254,226,54)" rx="2" ry="2" />
+<text  x="227.54" y="79.5" ></text>
+</g>
+<g >
+<title>multiply_plain (2,860,032 total_cycle_fm_wc, 0.04%)</title><rect x="392.6" y="101" width="0.6" height="15.0" fill="rgb(225,92,22)" rx="2" ry="2" />
+<text  x="395.64" y="111.5" ></text>
+</g>
+<g >
+<title>ntt (18,130,944 total_cycle_fm_wc, 0.28%)</title><rect x="244.6" y="85" width="3.4" height="15.0" fill="rgb(254,226,54)" rx="2" ry="2" />
+<text  x="247.62" y="95.5" ></text>
+</g>
+<g >
+<title>key_switch_hoisting (45,416,448 total_cycle_fm_wc, 0.71%)</title><rect x="260.1" y="85" width="8.4" height="15.0" fill="rgb(246,191,45)" rx="2" ry="2" />
+<text  x="263.12" y="95.5" ></text>
+</g>
+<g >
+<title>basis_convert (4,737,024 total_cycle_fm_wc, 0.07%)</title><rect x="393.2" y="85" width="0.9" height="15.0" fill="rgb(208,15,3)" rx="2" ry="2" />
+<text  x="396.21" y="95.5" ></text>
+</g>
+<g >
+<title>add (651,264 total_cycle_fm_wc, 0.01%)</title><rect x="1169.8" y="101" width="0.1" height="15.0" fill="rgb(244,183,43)" rx="2" ry="2" />
+<text  x="1172.82" y="111.5" ></text>
+</g>
+<g >
+<title>intt (6,922,240 total_cycle_fm_wc, 0.11%)</title><rect x="1182.0" y="85" width="1.3" height="15.0" fill="rgb(225,96,23)" rx="2" ry="2" />
+<text  x="1184.99" y="95.5" ></text>
+</g>
+<g >
+<title>mod_down_divide (1,118,208 total_cycle_fm_wc, 0.02%)</title><rect x="269.2" y="69" width="0.2" height="15.0" fill="rgb(213,38,9)" rx="2" ry="2" />
+<text  x="272.18" y="79.5" ></text>
+</g>
+<g >
+<title>ntt_common (17,547,264 total_cycle_fm_wc, 0.27%)</title><rect x="389.4" y="53" width="3.2" height="15.0" fill="rgb(248,198,47)" rx="2" ry="2" />
+<text  x="392.42" y="63.5" ></text>
+</g>
+<g >
+<title>basis_convert (945,152 total_cycle_fm_wc, 0.01%)</title><rect x="10.7" y="69" width="0.1" height="15.0" fill="rgb(208,15,3)" rx="2" ry="2" />
+<text  x="13.67" y="79.5" ></text>
+</g>
+<g >
+<title>key_switch_hoisting (39,585,792 total_cycle_fm_wc, 0.62%)</title><rect x="240.7" y="117" width="7.3" height="15.0" fill="rgb(246,191,45)" rx="2" ry="2" />
+<text  x="243.68" y="127.5" ></text>
+</g>
+<g >
+<title>multiply (37,173,248 total_cycle_fm_wc, 0.58%)</title><rect x="393.2" y="133" width="6.8" height="15.0" fill="rgb(225,94,22)" rx="2" ry="2" />
+<text  x="396.17" y="143.5" ></text>
+</g>
+<g >
+<title>intt (23,322,624 total_cycle_fm_wc, 0.36%)</title><rect x="528.4" y="85" width="4.3" height="15.0" fill="rgb(225,96,23)" rx="2" ry="2" />
+<text  x="531.43" y="95.5" ></text>
+</g>
+<g >
+<title>mod_down_reduce (26,994,688 total_cycle_fm_wc, 0.42%)</title><rect x="248.7" y="101" width="5.0" height="15.0" fill="rgb(244,179,42)" rx="2" ry="2" />
+<text  x="251.69" y="111.5" ></text>
+</g>
+<g >
+<title>intt (2,076,672 total_cycle_fm_wc, 0.03%)</title><rect x="224.2" y="69" width="0.3" height="15.0" fill="rgb(225,96,23)" rx="2" ry="2" />
+<text  x="227.15" y="79.5" ></text>
+</g>
+<g >
+<title>intt (2,875,392 total_cycle_fm_wc, 0.04%)</title><rect x="220.7" y="69" width="0.5" height="15.0" fill="rgb(225,96,23)" rx="2" ry="2" />
+<text  x="223.70" y="79.5" ></text>
+</g>
+<g >
+<title>mod_down_reduce (13,125,632 total_cycle_fm_wc, 0.20%)</title><rect x="223.1" y="85" width="2.4" height="15.0" fill="rgb(244,179,42)" rx="2" ry="2" />
+<text  x="226.13" y="95.5" ></text>
+</g>
+<g >
+<title>add (3,301,376 total_cycle_fm_wc, 0.05%)</title><rect x="83.0" y="101" width="0.6" height="15.0" fill="rgb(244,183,43)" rx="2" ry="2" />
+<text  x="85.97" y="111.5" ></text>
+</g>
+<g >
+<title>mult (872,448 total_cycle_fm_wc, 0.01%)</title><rect x="222.9" y="69" width="0.2" height="15.0" fill="rgb(206,7,1)" rx="2" ry="2" />
+<text  x="225.89" y="79.5" ></text>
+</g>
+<g >
+<title>basis_convert (13,811,712 total_cycle_fm_wc, 0.22%)</title><rect x="1169.9" y="85" width="2.6" height="15.0" fill="rgb(208,15,3)" rx="2" ry="2" />
+<text  x="1172.93" y="95.5" ></text>
+</g>
+<g >
+<title>ntt_common (4,230,144 total_cycle_fm_wc, 0.07%)</title><rect x="238.6" y="69" width="0.8" height="15.0" fill="rgb(248,198,47)" rx="2" ry="2" />
+<text  x="241.59" y="79.5" ></text>
+</g>
+<g >
+<title>mod_down_divide (2,039,808 total_cycle_fm_wc, 0.03%)</title><rect x="206.1" y="85" width="0.4" height="15.0" fill="rgb(213,38,9)" rx="2" ry="2" />
+<text  x="209.14" y="95.5" ></text>
+</g>
+<g >
+<title>add (737,280 total_cycle_fm_wc, 0.01%)</title><rect x="1099.5" y="117" width="0.1" height="15.0" fill="rgb(244,183,43)" rx="2" ry="2" />
+<text  x="1102.49" y="127.5" ></text>
+</g>
+<g >
+<title>mod_down_reduce (11,550,720 total_cycle_fm_wc, 0.18%)</title><rect x="396.7" y="101" width="2.1" height="15.0" fill="rgb(244,179,42)" rx="2" ry="2" />
+<text  x="399.68" y="111.5" ></text>
+</g>
+<g >
+<title>basis_convert (5,564,416 total_cycle_fm_wc, 0.09%)</title><rect x="223.1" y="69" width="1.1" height="15.0" fill="rgb(208,15,3)" rx="2" ry="2" />
+<text  x="226.13" y="79.5" ></text>
+</g>
+<g >
+<title>mod_down_reduce (3,643,392 total_cycle_fm_wc, 0.06%)</title><rect x="1168.6" y="133" width="0.7" height="15.0" fill="rgb(244,179,42)" rx="2" ry="2" />
+<text  x="1171.59" y="143.5" ></text>
+</g>
+<g >
+<title>fft_inner_bsgs (744,866,816 total_cycle_fm_wc, 11.61%)</title><rect x="256.2" y="133" width="137.0" height="15.0" fill="rgb(246,190,45)" rx="2" ry="2" />
+<text  x="259.19" y="143.5" >fft_inner_bsgs</text>
+</g>
+<g >
+<title>intt (1,038,336 total_cycle_fm_wc, 0.02%)</title><rect x="257.8" y="85" width="0.1" height="15.0" fill="rgb(225,96,23)" rx="2" ry="2" />
+<text  x="260.76" y="95.5" ></text>
+</g>
+<g >
+<title>basis_convert (32,514,048 total_cycle_fm_wc, 0.51%)</title><rect x="18.8" y="53" width="6.0" height="15.0" fill="rgb(208,15,3)" rx="2" ry="2" />
+<text  x="21.84" y="63.5" ></text>
+</g>
+<g >
+<title>ntt_common (1,671,168 total_cycle_fm_wc, 0.03%)</title><rect x="237.4" y="53" width="0.3" height="15.0" fill="rgb(248,198,47)" rx="2" ry="2" />
+<text  x="240.42" y="63.5" ></text>
+</g>
+<g >
+<title>ntt (5,324,800 total_cycle_fm_wc, 0.08%)</title><rect x="225.6" y="85" width="1.0" height="15.0" fill="rgb(254,226,54)" rx="2" ry="2" />
+<text  x="228.57" y="95.5" ></text>
+</g>
+<g >
+<title>intt (11,022,336 total_cycle_fm_wc, 0.17%)</title><rect x="24.8" y="53" width="2.0" height="15.0" fill="rgb(225,96,23)" rx="2" ry="2" />
+<text  x="27.82" y="63.5" ></text>
+</g>
+<g >
+<title>basis_convert (5,262,336 total_cycle_fm_wc, 0.08%)</title><rect x="233.8" y="69" width="0.9" height="15.0" fill="rgb(208,15,3)" rx="2" ry="2" />
+<text  x="236.77" y="79.5" ></text>
+</g>
+<g >
+<title>basis_convert (3,739,648 total_cycle_fm_wc, 0.06%)</title><rect x="236.7" y="69" width="0.7" height="15.0" fill="rgb(208,15,3)" rx="2" ry="2" />
+<text  x="239.73" y="79.5" ></text>
+</g>
+<g >
+<title>ntt (4,472,832 total_cycle_fm_wc, 0.07%)</title><rect x="1167.7" y="101" width="0.8" height="15.0" fill="rgb(254,226,54)" rx="2" ry="2" />
+<text  x="1170.69" y="111.5" ></text>
+</g>
+<g >
+<title>ntt_common (3,290,112 total_cycle_fm_wc, 0.05%)</title><rect x="230.4" y="53" width="0.6" height="15.0" fill="rgb(248,198,47)" rx="2" ry="2" />
+<text  x="233.39" y="63.5" ></text>
+</g>
+<g >
+<title>basis_convert (4,497,408 total_cycle_fm_wc, 0.07%)</title><rect x="14.5" y="85" width="0.8" height="15.0" fill="rgb(208,15,3)" rx="2" ry="2" />
+<text  x="17.52" y="95.5" ></text>
+</g>
+<g >
+<title>add (1,302,528 total_cycle_fm_wc, 0.02%)</title><rect x="1189.6" y="101" width="0.2" height="15.0" fill="rgb(244,183,43)" rx="2" ry="2" />
+<text  x="1192.55" y="111.5" ></text>
+</g>
+<g >
+<title>fft (744,866,816 total_cycle_fm_wc, 11.61%)</title><rect x="256.2" y="149" width="137.0" height="15.0" fill="rgb(246,190,45)" rx="2" ry="2" />
+<text  x="259.19" y="159.5" >fft</text>
+</g>
+<g >
+<title>ntt (931,840 total_cycle_fm_wc, 0.01%)</title><rect x="10.9" y="69" width="0.2" height="15.0" fill="rgb(254,226,54)" rx="2" ry="2" />
+<text  x="13.91" y="79.5" ></text>
+</g>
+<g >
+<title>automorph (66,060,288 total_cycle_fm_wc, 1.03%)</title><rect x="1099.6" y="133" width="12.2" height="15.0" fill="rgb(211,31,7)" rx="2" ry="2" />
+<text  x="1102.63" y="143.5" ></text>
+</g>
+<g >
+<title>ntt_common (6,789,120 total_cycle_fm_wc, 0.11%)</title><rect x="1182.0" y="69" width="1.3" height="15.0" fill="rgb(248,198,47)" rx="2" ry="2" />
+<text  x="1185.02" y="79.5" ></text>
+</g>
+<g >
+<title>add (1,835,008 total_cycle_fm_wc, 0.03%)</title><rect x="1179.1" y="101" width="0.3" height="15.0" fill="rgb(244,183,43)" rx="2" ry="2" />
+<text  x="1182.06" y="111.5" ></text>
+</g>
+<g >
+<title>mod_reduce_rescale (3,354,624 total_cycle_fm_wc, 0.05%)</title><rect x="231.0" y="101" width="0.6" height="15.0" fill="rgb(238,153,36)" rx="2" ry="2" />
+<text  x="233.99" y="111.5" ></text>
+</g>
+<g >
+<title>basis_convert (29,663,232 total_cycle_fm_wc, 0.46%)</title><rect x="1081.4" y="85" width="5.4" height="15.0" fill="rgb(208,15,3)" rx="2" ry="2" />
+<text  x="1084.36" y="95.5" ></text>
+</g>
+<g >
+<title>mod_down (39,650,304 total_cycle_fm_wc, 0.62%)</title><rect x="385.4" y="101" width="7.2" height="15.0" fill="rgb(240,162,38)" rx="2" ry="2" />
+<text  x="388.35" y="111.5" ></text>
+</g>
+<g >
+<title>ntt_common (2,036,736 total_cycle_fm_wc, 0.03%)</title><rect x="224.2" y="53" width="0.3" height="15.0" fill="rgb(248,198,47)" rx="2" ry="2" />
+<text  x="227.16" y="63.5" ></text>
+</g>
+<g >
+<title>basis_convert (10,905,600 total_cycle_fm_wc, 0.17%)</title><rect x="269.4" y="53" width="2.0" height="15.0" fill="rgb(208,15,3)" rx="2" ry="2" />
+<text  x="272.39" y="63.5" ></text>
+</g>
+<g >
+<title>mult (9,520,128 total_cycle_fm_wc, 0.15%)</title><rect x="17.0" y="101" width="1.8" height="15.0" fill="rgb(206,7,1)" rx="2" ry="2" />
+<text  x="20.01" y="111.5" ></text>
+</g>
+<g >
+<title>ntt_common (2,611,200 total_cycle_fm_wc, 0.04%)</title><rect x="226.7" y="101" width="0.5" height="15.0" fill="rgb(248,198,47)" rx="2" ry="2" />
+<text  x="229.67" y="111.5" ></text>
+</g>
+<g >
+<title>bootstrap_regression (6,416,461,312 total_cycle_fm_wc, 100.00%)</title><rect x="10.0" y="197" width="1180.0" height="15.0" fill="rgb(219,67,16)" rx="2" ry="2" />
+<text  x="13.00" y="207.5" >bootstrap_regression</text>
+</g>
+<g >
+<title>add (1,622,016 total_cycle_fm_wc, 0.03%)</title><rect x="231.7" y="117" width="0.3" height="15.0" fill="rgb(244,183,43)" rx="2" ry="2" />
+<text  x="234.66" y="127.5" ></text>
+</g>
+<g >
+<title>key_switch_hoisting (16,877,568 total_cycle_fm_wc, 0.26%)</title><rect x="393.2" y="117" width="3.1" height="15.0" fill="rgb(246,191,45)" rx="2" ry="2" />
+<text  x="396.21" y="127.5" ></text>
+</g>
+<g >
+<title>nesterov_update (3,084,288 total_cycle_fm_wc, 0.05%)</title><rect x="1098.9" y="149" width="0.5" height="15.0" fill="rgb(222,81,19)" rx="2" ry="2" />
+<text  x="1101.88" y="159.5" ></text>
+</g>
+<g >
+<title>intt (4,419,584 total_cycle_fm_wc, 0.07%)</title><rect x="250.7" y="85" width="0.8" height="15.0" fill="rgb(225,96,23)" rx="2" ry="2" />
+<text  x="253.69" y="95.5" ></text>
+</g>
+<g >
+<title>add (829,440 total_cycle_fm_wc, 0.01%)</title><rect x="34.0" y="53" width="0.1" height="15.0" fill="rgb(244,183,43)" rx="2" ry="2" />
+<text  x="37.00" y="63.5" ></text>
+</g>
+<g >
+<title>add (559,104 total_cycle_fm_wc, 0.01%)</title><rect x="269.2" y="53" width="0.1" height="15.0" fill="rgb(244,183,43)" rx="2" ry="2" />
+<text  x="272.18" y="63.5" ></text>
+</g>
+<g >
+<title>intt (1,916,928 total_cycle_fm_wc, 0.03%)</title><rect x="1167.3" y="101" width="0.4" height="15.0" fill="rgb(225,96,23)" rx="2" ry="2" />
+<text  x="1170.34" y="111.5" ></text>
+</g>
+<g >
+<title>intt (1,517,568 total_cycle_fm_wc, 0.02%)</title><rect x="15.3" y="85" width="0.3" height="15.0" fill="rgb(225,96,23)" rx="2" ry="2" />
+<text  x="18.35" y="95.5" ></text>
+</g>
+<g >
+<title>key_switch_hoisting (11,409,408 total_cycle_fm_wc, 0.18%)</title><rect x="227.3" y="101" width="2.0" height="15.0" fill="rgb(246,191,45)" rx="2" ry="2" />
+<text  x="230.25" y="111.5" ></text>
+</g>
+<g >
+<title>automorph (651,165,696 total_cycle_fm_wc, 10.15%)</title><rect x="401.9" y="117" width="119.7" height="15.0" fill="rgb(211,31,7)" rx="2" ry="2" />
+<text  x="404.89" y="127.5" >automorph</text>
+</g>
+<g >
+<title>rotate_inner (143,130,624 total_cycle_fm_wc, 2.23%)</title><rect x="275.1" y="101" width="26.3" height="15.0" fill="rgb(230,116,27)" rx="2" ry="2" />
+<text  x="278.10" y="111.5" >r..</text>
+</g>
+<g >
+<title>add (1,906,688 total_cycle_fm_wc, 0.03%)</title><rect x="301.5" y="85" width="0.3" height="15.0" fill="rgb(244,183,43)" rx="2" ry="2" />
+<text  x="304.48" y="95.5" ></text>
+</g>
+<g >
+<title>add (1,241,088 total_cycle_fm_wc, 0.02%)</title><rect x="248.0" y="85" width="0.2" height="15.0" fill="rgb(244,183,43)" rx="2" ry="2" />
+<text  x="250.96" y="95.5" ></text>
+</g>
+<g >
+<title>ntt_common (913,920 total_cycle_fm_wc, 0.01%)</title><rect x="10.9" y="53" width="0.2" height="15.0" fill="rgb(248,198,47)" rx="2" ry="2" />
+<text  x="13.92" y="63.5" ></text>
+</g>
+<g >
+<title>mult (1,861,632 total_cycle_fm_wc, 0.03%)</title><rect x="248.2" y="85" width="0.3" height="15.0" fill="rgb(206,7,1)" rx="2" ry="2" />
+<text  x="251.18" y="95.5" ></text>
+</g>
+<g >
+<title>multiply_plain (2,211,840 total_cycle_fm_wc, 0.03%)</title><rect x="1166.4" y="117" width="0.5" height="15.0" fill="rgb(225,92,22)" rx="2" ry="2" />
+<text  x="1169.45" y="127.5" ></text>
+</g>
+<g >
+<title>mod_down_reduce (64,410,624 total_cycle_fm_wc, 1.00%)</title><rect x="206.5" y="85" width="11.9" height="15.0" fill="rgb(244,179,42)" rx="2" ry="2" />
+<text  x="209.52" y="95.5" ></text>
+</g>
+<g >
+<title>mod_raise (16,877,568 total_cycle_fm_wc, 0.26%)</title><rect x="393.2" y="101" width="3.1" height="15.0" fill="rgb(246,188,45)" rx="2" ry="2" />
+<text  x="396.21" y="111.5" ></text>
+</g>
+<g >
+<title>ntt (1,916,928 total_cycle_fm_wc, 0.03%)</title><rect x="258.5" y="101" width="0.4" height="15.0" fill="rgb(254,226,54)" rx="2" ry="2" />
+<text  x="261.54" y="111.5" ></text>
+</g>
+<g >
+<title>ntt_common (5,222,400 total_cycle_fm_wc, 0.08%)</title><rect x="225.6" y="69" width="1.0" height="15.0" fill="rgb(248,198,47)" rx="2" ry="2" />
+<text  x="228.59" y="79.5" ></text>
+</g>
+<g >
+<title>add (7,471,104 total_cycle_fm_wc, 0.12%)</title><rect x="400.5" y="101" width="1.4" height="15.0" fill="rgb(244,183,43)" rx="2" ry="2" />
+<text  x="403.52" y="111.5" ></text>
+</g>
+<g >
+<title>ntt_common (3,185,664 total_cycle_fm_wc, 0.05%)</title><rect x="231.0" y="69" width="0.6" height="15.0" fill="rgb(248,198,47)" rx="2" ry="2" />
+<text  x="234.02" y="79.5" ></text>
+</g>
+<g >
+<title>ntt_common (17,782,272 total_cycle_fm_wc, 0.28%)</title><rect x="244.7" y="69" width="3.3" height="15.0" fill="rgb(248,198,47)" rx="2" ry="2" />
+<text  x="247.69" y="79.5" ></text>
+</g>
+<g >
+<title>bootstrap (2,083,558,912 total_cycle_fm_wc, 32.47%)</title><rect x="10.0" y="181" width="383.2" height="15.0" fill="rgb(218,60,14)" rx="2" ry="2" />
+<text  x="13.00" y="191.5" >bootstrap</text>
+</g>
+<g >
+<title>basis_convert (22,792,192 total_cycle_fm_wc, 0.36%)</title><rect x="34.3" y="53" width="4.2" height="15.0" fill="rgb(208,15,3)" rx="2" ry="2" />
+<text  x="37.30" y="63.5" ></text>
+</g>
+<g >
+<title>ntt_common (2,297,856 total_cycle_fm_wc, 0.04%)</title><rect x="397.3" y="69" width="0.4" height="15.0" fill="rgb(248,198,47)" rx="2" ry="2" />
+<text  x="400.33" y="79.5" ></text>
+</g>
+<g >
+<title>key_switch_hoisting (49,594,368 total_cycle_fm_wc, 0.77%)</title><rect x="1169.9" y="117" width="9.2" height="15.0" fill="rgb(246,191,45)" rx="2" ry="2" />
+<text  x="1172.93" y="127.5" ></text>
+</g>
+<g >
+<title>ntt (42,811,392 total_cycle_fm_wc, 0.67%)</title><rect x="1090.8" y="85" width="7.9" height="15.0" fill="rgb(254,226,54)" rx="2" ry="2" />
+<text  x="1093.85" y="95.5" ></text>
+</g>
+<g >
+<title>multiply_plain (2,322,432 total_cycle_fm_wc, 0.04%)</title><rect x="268.8" y="69" width="0.4" height="15.0" fill="rgb(225,92,22)" rx="2" ry="2" />
+<text  x="271.76" y="79.5" ></text>
+</g>
+<g >
+<title>rotate_digits (498,925,568 total_cycle_fm_wc, 7.78%)</title><rect x="301.4" y="117" width="91.8" height="15.0" fill="rgb(208,15,3)" rx="2" ry="2" />
+<text  x="304.42" y="127.5" >rotate_dig..</text>
+</g>
+<g >
+<title>mult (688,128 total_cycle_fm_wc, 0.01%)</title><rect x="385.5" y="69" width="0.1" height="15.0" fill="rgb(206,7,1)" rx="2" ry="2" />
+<text  x="388.48" y="79.5" ></text>
+</g>
+<g >
+<title>ntt_common (2,271,744 total_cycle_fm_wc, 0.04%)</title><rect x="234.7" y="53" width="0.5" height="15.0" fill="rgb(248,198,47)" rx="2" ry="2" />
+<text  x="237.75" y="63.5" ></text>
+</g>
+<g >
+<title>ntt_common (940,032 total_cycle_fm_wc, 0.01%)</title><rect x="1186.4" y="85" width="0.2" height="15.0" fill="rgb(248,198,47)" rx="2" ry="2" />
+<text  x="1189.38" y="95.5" ></text>
+</g>
+<g >
+<title>add (581,632 total_cycle_fm_wc, 0.01%)</title><rect x="222.8" y="69" width="0.1" height="15.0" fill="rgb(244,183,43)" rx="2" ry="2" />
+<text  x="225.79" y="79.5" ></text>
+</g>
+<g >
+<title>intt (2,342,912 total_cycle_fm_wc, 0.04%)</title><rect x="397.3" y="85" width="0.4" height="15.0" fill="rgb(225,96,23)" rx="2" ry="2" />
+<text  x="400.32" y="95.5" ></text>
+</g>
+<g >
+<title>mod_down (66,450,432 total_cycle_fm_wc, 1.04%)</title><rect x="206.1" y="101" width="12.3" height="15.0" fill="rgb(240,162,38)" rx="2" ry="2" />
+<text  x="209.14" y="111.5" ></text>
+</g>
+<g >
+<title>double_multiply (40,695,808 total_cycle_fm_wc, 0.63%)</title><rect x="219.2" y="133" width="7.5" height="15.0" fill="rgb(209,21,5)" rx="2" ry="2" />
+<text  x="222.17" y="143.5" ></text>
+</g>
+<g >
+<title>mult (651,264 total_cycle_fm_wc, 0.01%)</title><rect x="1180.0" y="85" width="0.1" height="15.0" fill="rgb(206,7,1)" rx="2" ry="2" />
+<text  x="1183.02" y="95.5" ></text>
+</g>
+<g >
+<title>ntt (15,974,400 total_cycle_fm_wc, 0.25%)</title><rect x="1186.6" y="101" width="2.9" height="15.0" fill="rgb(254,226,54)" rx="2" ry="2" />
+<text  x="1189.56" y="111.5" ></text>
+</g>
+<g >
+<title>key_switch_inner_product (3,102,720 total_cycle_fm_wc, 0.05%)</title><rect x="248.0" y="117" width="0.5" height="15.0" fill="rgb(240,163,39)" rx="2" ry="2" />
+<text  x="250.96" y="127.5" ></text>
+</g>
+<g >
+<title>ntt (11,341,824 total_cycle_fm_wc, 0.18%)</title><rect x="253.7" y="101" width="2.1" height="15.0" fill="rgb(254,226,54)" rx="2" ry="2" />
+<text  x="256.72" y="111.5" ></text>
+</g>
+<g >
+<title>mod_raise (10,567,680 total_cycle_fm_wc, 0.16%)</title><rect x="14.5" y="101" width="2.0" height="15.0" fill="rgb(246,188,45)" rx="2" ry="2" />
+<text  x="17.52" y="111.5" ></text>
+</g>
+<g >
+<title>mod_reduce_rescale (2,742,272 total_cycle_fm_wc, 0.04%)</title><rect x="226.7" y="133" width="0.5" height="15.0" fill="rgb(238,153,36)" rx="2" ry="2" />
+<text  x="229.65" y="143.5" ></text>
+</g>
+<g >
+<title>rotate_digits (740,440,064 total_cycle_fm_wc, 11.54%)</title><rect x="83.0" y="117" width="136.1" height="15.0" fill="rgb(208,15,3)" rx="2" ry="2" />
+<text  x="85.97" y="127.5" >rotate_digits</text>
+</g>
+<g >
+<title>sigmoid_product (116,738,048 total_cycle_fm_wc, 1.82%)</title><rect x="1168.5" y="149" width="21.5" height="15.0" fill="rgb(250,207,49)" rx="2" ry="2" />
+<text  x="1171.53" y="159.5" >s..</text>
+</g>
+<g >
+<title>mod_down_divide (3,293,184 total_cycle_fm_wc, 0.05%)</title><rect x="1080.8" y="101" width="0.6" height="15.0" fill="rgb(213,38,9)" rx="2" ry="2" />
+<text  x="1083.75" y="111.5" ></text>
+</g>
+<g >
+<title>inner_product (3,837,413,376 total_cycle_fm_wc, 59.81%)</title><rect x="393.2" y="149" width="705.7" height="15.0" fill="rgb(243,178,42)" rx="2" ry="2" />
+<text  x="396.17" y="159.5" >inner_product</text>
+</g>
+<g >
+<title>giant_step_basis (24,265,728 total_cycle_fm_wc, 0.38%)</title><rect x="227.2" y="149" width="4.5" height="15.0" fill="rgb(214,41,9)" rx="2" ry="2" />
+<text  x="230.19" y="159.5" ></text>
+</g>
+<g >
+<title>tree_up (91,070,464 total_cycle_fm_wc, 1.42%)</title><rect x="239.4" y="149" width="16.8" height="15.0" fill="rgb(229,114,27)" rx="2" ry="2" />
+<text  x="242.44" y="159.5" ></text>
+</g>
+<g >
+<title>ntt_common (5,483,520 total_cycle_fm_wc, 0.09%)</title><rect x="271.4" y="37" width="1.0" height="15.0" fill="rgb(248,198,47)" rx="2" ry="2" />
+<text  x="274.41" y="47.5" ></text>
+</g>
+<g >
+<title>rotate (224,848,896 total_cycle_fm_wc, 3.50%)</title><rect x="260.1" y="117" width="41.3" height="15.0" fill="rgb(232,125,30)" rx="2" ry="2" />
+<text  x="263.07" y="127.5" >rot..</text>
+</g>
+<g >
+<title>multiply (24,078,336 total_cycle_fm_wc, 0.38%)</title><rect x="227.2" y="117" width="4.5" height="15.0" fill="rgb(225,94,22)" rx="2" ry="2" />
+<text  x="230.23" y="127.5" ></text>
+</g>
+<g >
+<title>intt (6,895,616 total_cycle_fm_wc, 0.11%)</title><rect x="388.1" y="69" width="1.3" height="15.0" fill="rgb(225,96,23)" rx="2" ry="2" />
+<text  x="391.09" y="79.5" ></text>
+</g>
+<g >
+<title>ntt (3,248,128 total_cycle_fm_wc, 0.05%)</title><rect x="231.0" y="85" width="0.6" height="15.0" fill="rgb(254,226,54)" rx="2" ry="2" />
+<text  x="234.01" y="95.5" ></text>
+</g>
+<g >
+<title>intt (1,757,184 total_cycle_fm_wc, 0.03%)</title><rect x="228.1" y="69" width="0.3" height="15.0" fill="rgb(225,96,23)" rx="2" ry="2" />
+<text  x="231.07" y="79.5" ></text>
+</g>
+<g >
+<title>ntt_common (26,007,552 total_cycle_fm_wc, 0.41%)</title><rect x="213.6" y="53" width="4.8" height="15.0" fill="rgb(248,198,47)" rx="2" ry="2" />
+<text  x="216.58" y="63.5" ></text>
+</g>
+<g >
+<title>mod_raise (14,527,488 total_cycle_fm_wc, 0.23%)</title><rect x="233.8" y="85" width="2.6" height="15.0" fill="rgb(246,188,45)" rx="2" ry="2" />
+<text  x="236.77" y="95.5" ></text>
+</g>
+<g >
+<title>rotate_inner (212,336,640 total_cycle_fm_wc, 3.31%)</title><rect x="43.9" y="101" width="39.1" height="15.0" fill="rgb(230,116,27)" rx="2" ry="2" />
+<text  x="46.92" y="111.5" >rot..</text>
+</g>
+<g >
+<title>intt (7,933,952 total_cycle_fm_wc, 0.12%)</title><rect x="38.5" y="53" width="1.5" height="15.0" fill="rgb(225,96,23)" rx="2" ry="2" />
+<text  x="41.49" y="63.5" ></text>
+</g>
+<g >
+<title>intt (2,316,288 total_cycle_fm_wc, 0.04%)</title><rect x="234.7" y="69" width="0.5" height="15.0" fill="rgb(225,96,23)" rx="2" ry="2" />
+<text  x="237.74" y="79.5" ></text>
+</g>
+<g >
+<title>partial_multiply_inner (1,953,792 total_cycle_fm_wc, 0.03%)</title><rect x="1189.6" y="117" width="0.3" height="15.0" fill="rgb(221,75,17)" rx="2" ry="2" />
+<text  x="1192.55" y="127.5" ></text>
+</g>
+<g >
+<title>logistic_regression (4,332,902,400 total_cycle_fm_wc, 67.53%)</title><rect x="393.2" y="181" width="796.8" height="15.0" fill="rgb(246,191,45)" rx="2" ry="2" />
+<text  x="396.17" y="191.5" >logistic_regression</text>
+</g>
+<g >
+<title>mod_reduce_rescale (16,932,864 total_cycle_fm_wc, 0.26%)</title><rect x="1186.4" y="117" width="3.1" height="15.0" fill="rgb(238,153,36)" rx="2" ry="2" />
+<text  x="1189.38" y="127.5" ></text>
+</g>
+<g >
+<title>ntt_common (1,880,064 total_cycle_fm_wc, 0.03%)</title><rect x="258.5" y="85" width="0.4" height="15.0" fill="rgb(248,198,47)" rx="2" ry="2" />
+<text  x="261.54" y="95.5" ></text>
+</g>
+<g >
+<title>ntt_common (2,506,752 total_cycle_fm_wc, 0.04%)</title><rect x="1168.8" y="101" width="0.5" height="15.0" fill="rgb(248,198,47)" rx="2" ry="2" />
+<text  x="1171.80" y="111.5" ></text>
+</g>
+<g >
+<title>ntt_common (9,583,104 total_cycle_fm_wc, 0.15%)</title><rect x="211.7" y="53" width="1.8" height="15.0" fill="rgb(248,198,47)" rx="2" ry="2" />
+<text  x="214.73" y="63.5" ></text>
+</g>
+<g >
+<title>mod_reduce_rescale (1,118,208 total_cycle_fm_wc, 0.02%)</title><rect x="1099.2" y="133" width="0.2" height="15.0" fill="rgb(238,153,36)" rx="2" ry="2" />
+<text  x="1102.22" y="143.5" ></text>
+</g>
+<g >
+<title>ntt (4,313,088 total_cycle_fm_wc, 0.07%)</title><rect x="238.6" y="85" width="0.8" height="15.0" fill="rgb(254,226,54)" rx="2" ry="2" />
+<text  x="241.58" y="95.5" ></text>
+</g>
+<g >
+<title>mod_raise (45,416,448 total_cycle_fm_wc, 0.71%)</title><rect x="260.1" y="69" width="8.4" height="15.0" fill="rgb(246,188,45)" rx="2" ry="2" />
+<text  x="263.12" y="79.5" ></text>
+</g>
+<g >
+<title>mod_down (2,294,784 total_cycle_fm_wc, 0.04%)</title><rect x="10.7" y="101" width="0.4" height="15.0" fill="rgb(240,162,38)" rx="2" ry="2" />
+<text  x="13.66" y="111.5" ></text>
+</g>
+<g >
+<title>ntt (7,188,480 total_cycle_fm_wc, 0.11%)</title><rect x="1112.8" y="101" width="1.3" height="15.0" fill="rgb(254,226,54)" rx="2" ry="2" />
+<text  x="1115.79" y="111.5" ></text>
+</g>
+<g >
+<title>ntt_common (5,640,192 total_cycle_fm_wc, 0.09%)</title><rect x="397.8" y="69" width="1.0" height="15.0" fill="rgb(248,198,47)" rx="2" ry="2" />
+<text  x="400.77" y="79.5" ></text>
+</g>
+<g >
+<title>add (1,474,560 total_cycle_fm_wc, 0.02%)</title><rect x="1114.1" y="117" width="0.3" height="15.0" fill="rgb(244,183,43)" rx="2" ry="2" />
+<text  x="1117.11" y="127.5" ></text>
+</g>
+<g >
+<title>ntt (4,472,832 total_cycle_fm_wc, 0.07%)</title><rect x="237.7" y="69" width="0.8" height="15.0" fill="rgb(254,226,54)" rx="2" ry="2" />
+<text  x="240.73" y="79.5" ></text>
+</g>
+<g >
+<title>multiply_plain (712,704 total_cycle_fm_wc, 0.01%)</title><rect x="236.5" y="85" width="0.2" height="15.0" fill="rgb(225,92,22)" rx="2" ry="2" />
+<text  x="239.53" y="95.5" ></text>
+</g>
+<g >
+<title>mult (829,440 total_cycle_fm_wc, 0.01%)</title><rect x="34.1" y="53" width="0.2" height="15.0" fill="rgb(206,7,1)" rx="2" ry="2" />
+<text  x="37.15" y="63.5" ></text>
+</g>
+<g >
+<title>mod_down_reduce (7,778,304 total_cycle_fm_wc, 0.12%)</title><rect x="229.6" y="85" width="1.4" height="15.0" fill="rgb(244,179,42)" rx="2" ry="2" />
+<text  x="232.56" y="95.5" ></text>
+</g>
+<g >
+<title>mod_down (35,246,080 total_cycle_fm_wc, 0.55%)</title><rect x="1179.9" y="117" width="6.5" height="15.0" fill="rgb(240,162,38)" rx="2" ry="2" />
+<text  x="1182.90" y="127.5" ></text>
+</g>
+<g >
+<title>basis_convert (3,102,720 total_cycle_fm_wc, 0.05%)</title><rect x="1111.8" y="101" width="0.5" height="15.0" fill="rgb(208,15,3)" rx="2" ry="2" />
+<text  x="1114.78" y="111.5" ></text>
+</g>
+<g >
+<title>multiply_plain (1,861,632 total_cycle_fm_wc, 0.03%)</title><rect x="248.2" y="101" width="0.3" height="15.0" fill="rgb(225,92,22)" rx="2" ry="2" />
+<text  x="251.18" y="111.5" ></text>
+</g>
+<g >
+<title>add (1,241,088 total_cycle_fm_wc, 0.02%)</title><rect x="248.0" y="101" width="0.2" height="15.0" fill="rgb(244,183,43)" rx="2" ry="2" />
+<text  x="250.96" y="111.5" ></text>
+</g>
+<g >
+<title>ntt (6,815,744 total_cycle_fm_wc, 0.11%)</title><rect x="232.0" y="117" width="1.3" height="15.0" fill="rgb(254,226,54)" rx="2" ry="2" />
+<text  x="235.04" y="127.5" ></text>
+</g>
+<g >
+<title>partial_multiply_inner (1,351,680 total_cycle_fm_wc, 0.02%)</title><rect x="255.9" y="117" width="0.2" height="15.0" fill="rgb(221,75,17)" rx="2" ry="2" />
+<text  x="258.85" y="127.5" ></text>
+</g>
+<g >
+<title>add (2,250,752 total_cycle_fm_wc, 0.04%)</title><rect x="301.4" y="101" width="0.4" height="15.0" fill="rgb(244,183,43)" rx="2" ry="2" />
+<text  x="304.42" y="111.5" ></text>
+</g>
+<g >
+<title>mod_reduce_rescale (7,028,736 total_cycle_fm_wc, 0.11%)</title><rect x="232.0" y="133" width="1.3" height="15.0" fill="rgb(238,153,36)" rx="2" ry="2" />
+<text  x="235.00" y="143.5" ></text>
+</g>
+<g >
+<title>ntt (2,555,904 total_cycle_fm_wc, 0.04%)</title><rect x="1168.8" y="117" width="0.5" height="15.0" fill="rgb(254,226,54)" rx="2" ry="2" />
+<text  x="1171.79" y="127.5" ></text>
+</g>
+<g >
+<title>automorph (212,336,640 total_cycle_fm_wc, 3.31%)</title><rect x="43.9" y="85" width="39.1" height="15.0" fill="rgb(211,31,7)" rx="2" ry="2" />
+<text  x="46.92" y="95.5" >aut..</text>
+</g>
+<g >
+<title>ntt (17,891,328 total_cycle_fm_wc, 0.28%)</title><rect x="389.4" y="69" width="3.2" height="15.0" fill="rgb(254,226,54)" rx="2" ry="2" />
+<text  x="392.35" y="79.5" ></text>
+</g>
+<g >
+<title>automorph (283,115,520 total_cycle_fm_wc, 4.41%)</title><rect x="1114.4" y="117" width="52.0" height="15.0" fill="rgb(211,31,7)" rx="2" ry="2" />
+<text  x="1117.38" y="127.5" >autom..</text>
+</g>
+<g >
+<title>multiply (30,964,736 total_cycle_fm_wc, 0.48%)</title><rect x="233.7" y="117" width="5.7" height="15.0" fill="rgb(225,94,22)" rx="2" ry="2" />
+<text  x="236.74" y="127.5" ></text>
+</g>
+<g >
+<title>basis_convert (10,860,544 total_cycle_fm_wc, 0.17%)</title><rect x="248.7" y="85" width="2.0" height="15.0" fill="rgb(208,15,3)" rx="2" ry="2" />
+<text  x="251.69" y="95.5" ></text>
+</g>
+<g >
+<title>mod_down (97,705,984 total_cycle_fm_wc, 1.52%)</title><rect x="1080.8" y="117" width="17.9" height="15.0" fill="rgb(240,162,38)" rx="2" ry="2" />
+<text  x="1083.75" y="127.5" ></text>
+</g>
+<g >
+<title>add (1,548,288 total_cycle_fm_wc, 0.02%)</title><rect x="268.5" y="53" width="0.3" height="15.0" fill="rgb(244,183,43)" rx="2" ry="2" />
+<text  x="271.47" y="63.5" ></text>
+</g>
+<g >
+<title>ntt_common (15,667,200 total_cycle_fm_wc, 0.24%)</title><rect x="1186.6" y="85" width="2.9" height="15.0" fill="rgb(248,198,47)" rx="2" ry="2" />
+<text  x="1189.61" y="95.5" ></text>
+</g>
+<g >
+<title>ntt_common (22,874,112 total_cycle_fm_wc, 0.36%)</title><rect x="528.5" y="69" width="4.2" height="15.0" fill="rgb(248,198,47)" rx="2" ry="2" />
+<text  x="531.51" y="79.5" ></text>
+</g>
+<g >
+<title>key_switch_hoisting (14,527,488 total_cycle_fm_wc, 0.23%)</title><rect x="233.8" y="101" width="2.6" height="15.0" fill="rgb(246,191,45)" rx="2" ry="2" />
+<text  x="236.77" y="111.5" ></text>
+</g>
+<g >
+<title>basis_convert (3,457,024 total_cycle_fm_wc, 0.05%)</title><rect x="396.7" y="85" width="0.6" height="15.0" fill="rgb(208,15,3)" rx="2" ry="2" />
+<text  x="399.68" y="95.5" ></text>
+</g>
+<g >
+<title>mult (4,187,136 total_cycle_fm_wc, 0.07%)</title><rect x="218.4" y="85" width="0.7" height="15.0" fill="rgb(206,7,1)" rx="2" ry="2" />
+<text  x="221.36" y="95.5" ></text>
+</g>
+<g >
+<title>all (6,416,461,312 total_cycle_fm_wc, 100%)</title><rect x="10.0" y="213" width="1180.0" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="13.00" y="223.5" ></text>
+</g>
+<g >
+<title>intt (3,035,136 total_cycle_fm_wc, 0.05%)</title><rect x="394.1" y="85" width="0.5" height="15.0" fill="rgb(225,96,23)" rx="2" ry="2" />
+<text  x="397.08" y="95.5" ></text>
+</g>
+<g >
+<title>add (9,520,128 total_cycle_fm_wc, 0.15%)</title><rect x="12.8" y="101" width="1.7" height="15.0" fill="rgb(244,183,43)" rx="2" ry="2" />
+<text  x="15.77" y="111.5" ></text>
+</g>
+<g >
+<title>mod_down_reduce (8,691,712 total_cycle_fm_wc, 0.14%)</title><rect x="1166.9" y="117" width="1.6" height="15.0" fill="rgb(244,179,42)" rx="2" ry="2" />
+<text  x="1169.92" y="127.5" ></text>
+</g>
+<g >
+<title>basis_convert (608,256 total_cycle_fm_wc, 0.01%)</title><rect x="1168.6" y="117" width="0.1" height="15.0" fill="rgb(208,15,3)" rx="2" ry="2" />
+<text  x="1171.59" y="127.5" ></text>
+</g>
+<g >
+<title>key_switch_hoisting (12,687,360 total_cycle_fm_wc, 0.20%)</title><rect x="1111.8" y="133" width="2.3" height="15.0" fill="rgb(246,191,45)" rx="2" ry="2" />
+<text  x="1114.78" y="143.5" ></text>
+</g>
+<g >
+<title>add (1,835,008 total_cycle_fm_wc, 0.03%)</title><rect x="1179.1" y="85" width="0.3" height="15.0" fill="rgb(244,183,43)" rx="2" ry="2" />
+<text  x="1182.06" y="95.5" ></text>
+</g>
+<g >
+<title>basis_convert (2,301,952 total_cycle_fm_wc, 0.04%)</title><rect x="1166.9" y="101" width="0.4" height="15.0" fill="rgb(208,15,3)" rx="2" ry="2" />
+<text  x="1169.92" y="111.5" ></text>
+</g>
+<g >
+<title>mult (933,888 total_cycle_fm_wc, 0.01%)</title><rect x="396.4" y="85" width="0.2" height="15.0" fill="rgb(206,7,1)" rx="2" ry="2" />
+<text  x="399.43" y="95.5" ></text>
+</g>
+<g >
+<title>ntt (3,115,008 total_cycle_fm_wc, 0.05%)</title><rect x="257.9" y="85" width="0.6" height="15.0" fill="rgb(254,226,54)" rx="2" ry="2" />
+<text  x="260.95" y="95.5" ></text>
+</g>
+</g>
+</svg>

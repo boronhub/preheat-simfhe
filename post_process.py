@@ -92,7 +92,7 @@ def flamegraph(name, data, attr, dir="data", gen_svg=True):
                 chart_units,
                 flame_txt,
             )
-            command = "flamegraph.pl"
+            command = "./flamegraph.pl"
 
             subprocess.call(
                 [

@@ -1,0 +1,2682 @@
+<?xml version="1.0" standalone="no"?>
+<!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN" "http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd">
+<svg version="1.1" width="1200" height="262" onload="init(evt)" viewBox="0 0 1200 262" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink">
+<!-- Flame graph stack visualization. See https://github.com/brendangregg/FlameGraph for latest version, and http://www.brendangregg.com/flamegraphs.html for examples. -->
+<!-- NOTES:  -->
+<defs>
+	<linearGradient id="background" y1="0" y2="1" x1="0" x2="0" >
+		<stop stop-color="#eeeeee" offset="5%" />
+		<stop stop-color="#eeeeb0" offset="95%" />
+	</linearGradient>
+</defs>
+<style type="text/css">
+	text { font-family:Verdana; font-size:12px; fill:rgb(0,0,0); }
+	#search, #ignorecase { opacity:0.1; cursor:pointer; }
+	#search:hover, #search.show, #ignorecase:hover, #ignorecase.show { opacity:1; }
+	#subtitle { text-anchor:middle; font-color:rgb(160,160,160); }
+	#title { text-anchor:middle; font-size:17px}
+	#unzoom { cursor:pointer; }
+	#frames > *:hover { stroke:black; stroke-width:0.5; cursor:pointer; }
+	.hide { display:none; }
+	.parent { opacity:0.5; }
+</style>
+<script type="text/ecmascript">
+<![CDATA[
+	"use strict";
+	var details, searchbtn, unzoombtn, matchedtxt, svg, searching, currentSearchTerm, ignorecase, ignorecaseBtn;
+	function init(evt) {
+		details = document.getElementById("details").firstChild;
+		searchbtn = document.getElementById("search");
+		ignorecaseBtn = document.getElementById("ignorecase");
+		unzoombtn = document.getElementById("unzoom");
+		matchedtxt = document.getElementById("matched");
+		svg = document.getElementsByTagName("svg")[0];
+		searching = 0;
+		currentSearchTerm = null;
+
+		// use GET parameters to restore a flamegraphs state.
+		var params = get_params();
+		if (params.x && params.y)
+			zoom(find_group(document.querySelector('[x="' + params.x + '"][y="' + params.y + '"]')));
+                if (params.s) search(params.s);
+	}
+
+	// event listeners
+	window.addEventListener("click", function(e) {
+		var target = find_group(e.target);
+		if (target) {
+			if (target.nodeName == "a") {
+				if (e.ctrlKey === false) return;
+				e.preventDefault();
+			}
+			if (target.classList.contains("parent")) unzoom(true);
+			zoom(target);
+			if (!document.querySelector('.parent')) {
+				// we have basically done a clearzoom so clear the url
+				var params = get_params();
+				if (params.x) delete params.x;
+				if (params.y) delete params.y;
+				history.replaceState(null, null, parse_params(params));
+				unzoombtn.classList.add("hide");
+				return;
+			}
+
+			// set parameters for zoom state
+			var el = target.querySelector("rect");
+			if (el && el.attributes && el.attributes.y && el.attributes._orig_x) {
+				var params = get_params()
+				params.x = el.attributes._orig_x.value;
+				params.y = el.attributes.y.value;
+				history.replaceState(null, null, parse_params(params));
+			}
+		}
+		else if (e.target.id == "unzoom") clearzoom();
+		else if (e.target.id == "search") search_prompt();
+		else if (e.target.id == "ignorecase") toggle_ignorecase();
+	}, false)
+
+	// mouse-over for info
+	// show
+	window.addEventListener("mouseover", function(e) {
+		var target = find_group(e.target);
+		if (target) details.nodeValue = "Function: " + g_to_text(target);
+	}, false)
+
+	// clear
+	window.addEventListener("mouseout", function(e) {
+		var target = find_group(e.target);
+		if (target) details.nodeValue = ' ';
+	}, false)
+
+	// ctrl-F for search
+	// ctrl-I to toggle case-sensitive search
+	window.addEventListener("keydown",function (e) {
+		if (e.keyCode === 114 || (e.ctrlKey && e.keyCode === 70)) {
+			e.preventDefault();
+			search_prompt();
+		}
+		else if (e.ctrlKey && e.keyCode === 73) {
+			e.preventDefault();
+			toggle_ignorecase();
+		}
+	}, false)
+
+	// functions
+	function get_params() {
+		var params = {};
+		var paramsarr = window.location.search.substr(1).split('&');
+		for (var i = 0; i < paramsarr.length; ++i) {
+			var tmp = paramsarr[i].split("=");
+			if (!tmp[0] || !tmp[1]) continue;
+			params[tmp[0]]  = decodeURIComponent(tmp[1]);
+		}
+		return params;
+	}
+	function parse_params(params) {
+		var uri = "?";
+		for (var key in params) {
+			uri += key + '=' + encodeURIComponent(params[key]) + '&';
+		}
+		if (uri.slice(-1) == "&")
+			uri = uri.substring(0, uri.length - 1);
+		if (uri == '?')
+			uri = window.location.href.split('?')[0];
+		return uri;
+	}
+	function find_child(node, selector) {
+		var children = node.querySelectorAll(selector);
+		if (children.length) return children[0];
+	}
+	function find_group(node) {
+		var parent = node.parentElement;
+		if (!parent) return;
+		if (parent.id == "frames") return node;
+		return find_group(parent);
+	}
+	function orig_save(e, attr, val) {
+		if (e.attributes["_orig_" + attr] != undefined) return;
+		if (e.attributes[attr] == undefined) return;
+		if (val == undefined) val = e.attributes[attr].value;
+		e.setAttribute("_orig_" + attr, val);
+	}
+	function orig_load(e, attr) {
+		if (e.attributes["_orig_"+attr] == undefined) return;
+		e.attributes[attr].value = e.attributes["_orig_" + attr].value;
+		e.removeAttribute("_orig_"+attr);
+	}
+	function g_to_text(e) {
+		var text = find_child(e, "title").firstChild.nodeValue;
+		return (text)
+	}
+	function g_to_func(e) {
+		var func = g_to_text(e);
+		// if there's any manipulation we want to do to the function
+		// name before it's searched, do it here before returning.
+		return (func);
+	}
+	function update_text(e) {
+		var r = find_child(e, "rect");
+		var t = find_child(e, "text");
+		var w = parseFloat(r.attributes.width.value) -3;
+		var txt = find_child(e, "title").textContent.replace(/\([^(]*\)$/,"");
+		t.attributes.x.value = parseFloat(r.attributes.x.value) + 3;
+
+		// Smaller than this size won't fit anything
+		if (w < 2 * 12 * 0.59) {
+			t.textContent = "";
+			return;
+		}
+
+		t.textContent = txt;
+		var sl = t.getSubStringLength(0, txt.length);
+		// check if only whitespace or if we can fit the entire string into width w
+		if (/^ *$/.test(txt) || sl < w)
+			return;
+
+		// this isn't perfect, but gives a good starting point
+		// and avoids calling getSubStringLength too often
+		var start = Math.floor((w/sl) * txt.length);
+		for (var x = start; x > 0; x = x-2) {
+			if (t.getSubStringLength(0, x + 2) <= w) {
+				t.textContent = txt.substring(0, x) + "..";
+				return;
+			}
+		}
+		t.textContent = "";
+	}
+
+	// zoom
+	function zoom_reset(e) {
+		if (e.attributes != undefined) {
+			orig_load(e, "x");
+			orig_load(e, "width");
+		}
+		if (e.childNodes == undefined) return;
+		for (var i = 0, c = e.childNodes; i < c.length; i++) {
+			zoom_reset(c[i]);
+		}
+	}
+	function zoom_child(e, x, ratio) {
+		if (e.attributes != undefined) {
+			if (e.attributes.x != undefined) {
+				orig_save(e, "x");
+				e.attributes.x.value = (parseFloat(e.attributes.x.value) - x - 10) * ratio + 10;
+				if (e.tagName == "text")
+					e.attributes.x.value = find_child(e.parentNode, "rect[x]").attributes.x.value + 3;
+			}
+			if (e.attributes.width != undefined) {
+				orig_save(e, "width");
+				e.attributes.width.value = parseFloat(e.attributes.width.value) * ratio;
+			}
+		}
+
+		if (e.childNodes == undefined) return;
+		for (var i = 0, c = e.childNodes; i < c.length; i++) {
+			zoom_child(c[i], x - 10, ratio);
+		}
+	}
+	function zoom_parent(e) {
+		if (e.attributes) {
+			if (e.attributes.x != undefined) {
+				orig_save(e, "x");
+				e.attributes.x.value = 10;
+			}
+			if (e.attributes.width != undefined) {
+				orig_save(e, "width");
+				e.attributes.width.value = parseInt(svg.width.baseVal.value) - (10 * 2);
+			}
+		}
+		if (e.childNodes == undefined) return;
+		for (var i = 0, c = e.childNodes; i < c.length; i++) {
+			zoom_parent(c[i]);
+		}
+	}
+	function zoom(node) {
+		var attr = find_child(node, "rect").attributes;
+		var width = parseFloat(attr.width.value);
+		var xmin = parseFloat(attr.x.value);
+		var xmax = parseFloat(xmin + width);
+		var ymin = parseFloat(attr.y.value);
+		var ratio = (svg.width.baseVal.value - 2 * 10) / width;
+
+		// XXX: Workaround for JavaScript float issues (fix me)
+		var fudge = 0.0001;
+
+		unzoombtn.classList.remove("hide");
+
+		var el = document.getElementById("frames").children;
+		for (var i = 0; i < el.length; i++) {
+			var e = el[i];
+			var a = find_child(e, "rect").attributes;
+			var ex = parseFloat(a.x.value);
+			var ew = parseFloat(a.width.value);
+			var upstack;
+			// Is it an ancestor
+			if (0 == 0) {
+				upstack = parseFloat(a.y.value) > ymin;
+			} else {
+				upstack = parseFloat(a.y.value) < ymin;
+			}
+			if (upstack) {
+				// Direct ancestor
+				if (ex <= xmin && (ex+ew+fudge) >= xmax) {
+					e.classList.add("parent");
+					zoom_parent(e);
+					update_text(e);
+				}
+				// not in current path
+				else
+					e.classList.add("hide");
+			}
+			// Children maybe
+			else {
+				// no common path
+				if (ex < xmin || ex + fudge >= xmax) {
+					e.classList.add("hide");
+				}
+				else {
+					zoom_child(e, xmin, ratio);
+					update_text(e);
+				}
+			}
+		}
+		search();
+	}
+	function unzoom(dont_update_text) {
+		unzoombtn.classList.add("hide");
+		var el = document.getElementById("frames").children;
+		for(var i = 0; i < el.length; i++) {
+			el[i].classList.remove("parent");
+			el[i].classList.remove("hide");
+			zoom_reset(el[i]);
+			if(!dont_update_text) update_text(el[i]);
+		}
+		search();
+	}
+	function clearzoom() {
+		unzoom();
+
+		// remove zoom state
+		var params = get_params();
+		if (params.x) delete params.x;
+		if (params.y) delete params.y;
+		history.replaceState(null, null, parse_params(params));
+	}
+
+	// search
+	function toggle_ignorecase() {
+		ignorecase = !ignorecase;
+		if (ignorecase) {
+			ignorecaseBtn.classList.add("show");
+		} else {
+			ignorecaseBtn.classList.remove("show");
+		}
+		reset_search();
+		search();
+	}
+	function reset_search() {
+		var el = document.querySelectorAll("#frames rect");
+		for (var i = 0; i < el.length; i++) {
+			orig_load(el[i], "fill")
+		}
+		var params = get_params();
+		delete params.s;
+		history.replaceState(null, null, parse_params(params));
+	}
+	function search_prompt() {
+		if (!searching) {
+			var term = prompt("Enter a search term (regexp " +
+			    "allowed, eg: ^ext4_)"
+			    + (ignorecase ? ", ignoring case" : "")
+			    + "\nPress Ctrl-i to toggle case sensitivity", "");
+			if (term != null) search(term);
+		} else {
+			reset_search();
+			searching = 0;
+			currentSearchTerm = null;
+			searchbtn.classList.remove("show");
+			searchbtn.firstChild.nodeValue = "Search"
+			matchedtxt.classList.add("hide");
+			matchedtxt.firstChild.nodeValue = ""
+		}
+	}
+	function search(term) {
+		if (term) currentSearchTerm = term;
+		if (currentSearchTerm === null) return;
+
+		var re = new RegExp(currentSearchTerm, ignorecase ? 'i' : '');
+		var el = document.getElementById("frames").children;
+		var matches = new Object();
+		var maxwidth = 0;
+		for (var i = 0; i < el.length; i++) {
+			var e = el[i];
+			var func = g_to_func(e);
+			var rect = find_child(e, "rect");
+			if (func == null || rect == null)
+				continue;
+
+			// Save max width. Only works as we have a root frame
+			var w = parseFloat(rect.attributes.width.value);
+			if (w > maxwidth)
+				maxwidth = w;
+
+			if (func.match(re)) {
+				// highlight
+				var x = parseFloat(rect.attributes.x.value);
+				orig_save(rect, "fill");
+				rect.attributes.fill.value = "rgb(230,0,230)";
+
+				// remember matches
+				if (matches[x] == undefined) {
+					matches[x] = w;
+				} else {
+					if (w > matches[x]) {
+						// overwrite with parent
+						matches[x] = w;
+					}
+				}
+				searching = 1;
+			}
+		}
+		if (!searching)
+			return;
+		var params = get_params();
+		params.s = currentSearchTerm;
+		history.replaceState(null, null, parse_params(params));
+
+		searchbtn.classList.add("show");
+		searchbtn.firstChild.nodeValue = "Reset Search";
+
+		// calculate percent matched, excluding vertical overlap
+		var count = 0;
+		var lastx = -1;
+		var lastw = 0;
+		var keys = Array();
+		for (k in matches) {
+			if (matches.hasOwnProperty(k))
+				keys.push(k);
+		}
+		// sort the matched frames by their x location
+		// ascending, then width descending
+		keys.sort(function(a, b){
+			return a - b;
+		});
+		// Step through frames saving only the biggest bottom-up frames
+		// thanks to the sort order. This relies on the tree property
+		// where children are always smaller than their parents.
+		var fudge = 0.0001;	// JavaScript floating point
+		for (var k in keys) {
+			var x = parseFloat(keys[k]);
+			var w = matches[keys[k]];
+			if (x >= lastx + lastw - fudge) {
+				count += w;
+				lastx = x;
+				lastw = w;
+			}
+		}
+		// display matched percent
+		matchedtxt.classList.remove("hide");
+		var pct = 100 * count / maxwidth;
+		if (pct != 100) pct = pct.toFixed(1)
+		matchedtxt.firstChild.nodeValue = "Matched: " + pct + "%";
+	}
+]]>
+</script>
+<rect x="0.0" y="0" width="1200.0" height="262.0" fill="url(#background)"  />
+<text id="title" x="600.00" y="24" >logistic_regression.bootstrap_regression_sw.total_ops</text>
+<text id="details" x="10.00" y="245" > </text>
+<text id="unzoom" x="10.00" y="24" class="hide">Reset Zoom</text>
+<text id="search" x="1090.00" y="24" >Search</text>
+<text id="ignorecase" x="1174.00" y="24" >ic</text>
+<text id="matched" x="1090.00" y="245" > </text>
+<g id="frames">
+<g >
+<title>mod_down (25,650,266,112 total_ops, 9.14%)</title><rect x="917.1" y="117" width="107.8" height="15.0" fill="rgb(240,162,38)" rx="2" ry="2" />
+<text  x="920.07" y="127.5" >mod_down</text>
+</g>
+<g >
+<title>add (488,112,128 total_ops, 0.17%)</title><rect x="625.1" y="85" width="2.1" height="15.0" fill="rgb(244,183,43)" rx="2" ry="2" />
+<text  x="628.10" y="95.5" ></text>
+</g>
+<g >
+<title>add (176,160,768 total_ops, 0.06%)</title><rect x="627.2" y="69" width="0.7" height="15.0" fill="rgb(244,183,43)" rx="2" ry="2" />
+<text  x="630.15" y="79.5" ></text>
+</g>
+<g >
+<title>add (333,447,168 total_ops, 0.12%)</title><rect x="1187.4" y="101" width="1.4" height="15.0" fill="rgb(244,183,43)" rx="2" ry="2" />
+<text  x="1190.40" y="111.5" ></text>
+</g>
+<g >
+<title>intt (84,934,656 total_ops, 0.03%)</title><rect x="708.4" y="101" width="0.4" height="15.0" fill="rgb(225,96,23)" rx="2" ry="2" />
+<text  x="711.44" y="111.5" ></text>
+</g>
+<g >
+<title>multiply_plain (2,437,152,768 total_ops, 0.87%)</title><rect x="42.0" y="117" width="10.3" height="15.0" fill="rgb(225,92,22)" rx="2" ry="2" />
+<text  x="45.04" y="127.5" ></text>
+</g>
+<g >
+<title>multiply_plain (594,542,592 total_ops, 0.21%)</title><rect x="586.8" y="69" width="2.5" height="15.0" fill="rgb(225,92,22)" rx="2" ry="2" />
+<text  x="589.80" y="79.5" ></text>
+</g>
+<g >
+<title>intt (509,607,936 total_ops, 0.18%)</title><rect x="1051.4" y="101" width="2.2" height="15.0" fill="rgb(225,96,23)" rx="2" ry="2" />
+<text  x="1054.43" y="111.5" ></text>
+</g>
+<g >
+<title>rotate_digits (19,285,671,936 total_ops, 6.87%)</title><rect x="203.5" y="117" width="81.0" height="15.0" fill="rgb(208,15,3)" rx="2" ry="2" />
+<text  x="206.45" y="127.5" >rotate_di..</text>
+</g>
+<g >
+<title>compute_phi (67,895,296 total_ops, 0.02%)</title><rect x="643.1" y="53" width="0.3" height="15.0" fill="rgb(234,135,32)" rx="2" ry="2" />
+<text  x="646.15" y="63.5" ></text>
+</g>
+<g >
+<title>mod_down (600,047,616 total_ops, 0.21%)</title><rect x="14.0" y="101" width="2.5" height="15.0" fill="rgb(240,162,38)" rx="2" ry="2" />
+<text  x="16.99" y="111.5" ></text>
+</g>
+<g >
+<title>ntt (679,477,248 total_ops, 0.24%)</title><rect x="1060.2" y="117" width="2.8" height="15.0" fill="rgb(254,226,54)" rx="2" ry="2" />
+<text  x="1063.18" y="127.5" ></text>
+</g>
+<g >
+<title>key_switch_hoisting (863,502,336 total_ops, 0.31%)</title><rect x="10.1" y="101" width="3.6" height="15.0" fill="rgb(246,191,45)" rx="2" ry="2" />
+<text  x="13.10" y="111.5" ></text>
+</g>
+<g >
+<title>decompose (119,537,664 total_ops, 0.04%)</title><rect x="416.5" y="101" width="0.5" height="15.0" fill="rgb(218,62,14)" rx="2" ry="2" />
+<text  x="419.54" y="111.5" ></text>
+</g>
+<g >
+<title>key_switch_inner_product (1,452,277,760 total_ops, 0.52%)</title><rect x="138.1" y="85" width="6.1" height="15.0" fill="rgb(240,163,39)" rx="2" ry="2" />
+<text  x="141.08" y="95.5" ></text>
+</g>
+<g >
+<title>compute_phi (44,826,624 total_ops, 0.02%)</title><rect x="33.4" y="69" width="0.2" height="15.0" fill="rgb(234,135,32)" rx="2" ry="2" />
+<text  x="36.42" y="79.5" ></text>
+</g>
+<g >
+<title>ntt_common (4,251,451,392 total_ops, 1.51%)</title><rect x="1148.9" y="69" width="17.9" height="15.0" fill="rgb(248,198,47)" rx="2" ry="2" />
+<text  x="1151.93" y="79.5" ></text>
+</g>
+<g >
+<title>mult (223,346,688 total_ops, 0.08%)</title><rect x="307.2" y="69" width="0.9" height="15.0" fill="rgb(206,7,1)" rx="2" ry="2" />
+<text  x="310.21" y="79.5" ></text>
+</g>
+<g >
+<title>ntt (764,411,904 total_ops, 0.27%)</title><rect x="1063.5" y="117" width="3.2" height="15.0" fill="rgb(254,226,54)" rx="2" ry="2" />
+<text  x="1066.45" y="127.5" ></text>
+</g>
+<g >
+<title>ntt_common (1,744,699,392 total_ops, 0.62%)</title><rect x="382.9" y="53" width="7.4" height="15.0" fill="rgb(248,198,47)" rx="2" ry="2" />
+<text  x="385.94" y="63.5" ></text>
+</g>
+<g >
+<title>ntt_common (120,324,096 total_ops, 0.04%)</title><rect x="1059.7" y="101" width="0.5" height="15.0" fill="rgb(248,198,47)" rx="2" ry="2" />
+<text  x="1062.68" y="111.5" ></text>
+</g>
+<g >
+<title>mod_down (3,149,922,304 total_ops, 1.12%)</title><rect x="694.7" y="117" width="13.3" height="15.0" fill="rgb(240,162,38)" rx="2" ry="2" />
+<text  x="697.75" y="127.5" ></text>
+</g>
+<g >
+<title>ntt_common (10,748,952,576 total_ops, 3.83%)</title><rect x="979.7" y="69" width="45.2" height="15.0" fill="rgb(248,198,47)" rx="2" ry="2" />
+<text  x="982.70" y="79.5" >ntt_..</text>
+</g>
+<g >
+<title>add (56,623,104 total_ops, 0.02%)</title><rect x="673.9" y="101" width="0.3" height="15.0" fill="rgb(244,183,43)" rx="2" ry="2" />
+<text  x="676.92" y="111.5" ></text>
+</g>
+<g >
+<title>ntt_common (6,738,149,376 total_ops, 2.40%)</title><rect x="1094.6" y="69" width="28.4" height="15.0" fill="rgb(248,198,47)" rx="2" ry="2" />
+<text  x="1097.63" y="79.5" >nt..</text>
+</g>
+<g >
+<title>compute_phi (67,108,864 total_ops, 0.02%)</title><rect x="363.7" y="101" width="0.2" height="15.0" fill="rgb(234,135,32)" rx="2" ry="2" />
+<text  x="366.67" y="111.5" ></text>
+</g>
+<g >
+<title>coeff_to_slot (65,310,949,376 total_ops, 23.26%)</title><rect x="10.0" y="165" width="274.5" height="15.0" fill="rgb(235,142,34)" rx="2" ry="2" />
+<text  x="13.00" y="175.5" >coeff_to_slot</text>
+</g>
+<g >
+<title>intt (467,140,608 total_ops, 0.17%)</title><rect x="339.0" y="69" width="1.9" height="15.0" fill="rgb(225,96,23)" rx="2" ry="2" />
+<text  x="341.97" y="79.5" ></text>
+</g>
+<g >
+<title>intt (2,109,210,624 total_ops, 0.75%)</title><rect x="170.5" y="53" width="8.9" height="15.0" fill="rgb(225,96,23)" rx="2" ry="2" />
+<text  x="173.49" y="63.5" ></text>
+</g>
+<g >
+<title>compute_tf (114,819,072 total_ops, 0.04%)</title><rect x="769.3" y="69" width="0.5" height="15.0" fill="rgb(249,206,49)" rx="2" ry="2" />
+<text  x="772.31" y="79.5" ></text>
+</g>
+<g >
+<title>ntt_common (8,342,470,656 total_ops, 2.97%)</title><rect x="103.0" y="37" width="35.1" height="15.0" fill="rgb(248,198,47)" rx="2" ry="2" />
+<text  x="106.01" y="47.5" >nt..</text>
+</g>
+<g >
+<title>bootstrap (157,956,571,136 total_ops, 56.26%)</title><rect x="10.0" y="181" width="663.9" height="15.0" fill="rgb(218,60,14)" rx="2" ry="2" />
+<text  x="13.00" y="191.5" >bootstrap</text>
+</g>
+<g >
+<title>intt (764,411,904 total_ops, 0.27%)</title><rect x="293.9" y="69" width="3.2" height="15.0" fill="rgb(225,96,23)" rx="2" ry="2" />
+<text  x="296.91" y="79.5" ></text>
+</g>
+<g >
+<title>mod_raise (35,266,756,608 total_ops, 12.56%)</title><rect x="728.6" y="101" width="148.3" height="15.0" fill="rgb(246,188,45)" rx="2" ry="2" />
+<text  x="731.64" y="111.5" >mod_raise</text>
+</g>
+<g >
+<title>intt (615,776,256 total_ops, 0.22%)</title><rect x="379.9" y="69" width="2.6" height="15.0" fill="rgb(225,96,23)" rx="2" ry="2" />
+<text  x="382.92" y="79.5" ></text>
+</g>
+<g >
+<title>partial_multiply_inner (500,170,752 total_ops, 0.18%)</title><rect x="1187.4" y="117" width="2.1" height="15.0" fill="rgb(221,75,17)" rx="2" ry="2" />
+<text  x="1190.40" y="127.5" ></text>
+</g>
+<g >
+<title>ntt_common (1,804,861,440 total_ops, 0.64%)</title><rect x="1037.0" y="85" width="7.6" height="15.0" fill="rgb(248,198,47)" rx="2" ry="2" />
+<text  x="1040.03" y="95.5" ></text>
+</g>
+<g >
+<title>eval_sine (53,854,339,072 total_ops, 19.18%)</title><rect x="284.5" y="165" width="226.4" height="15.0" fill="rgb(226,99,23)" rx="2" ry="2" />
+<text  x="287.51" y="175.5" >eval_sine</text>
+</g>
+<g >
+<title>compute_tf (83,361,792 total_ops, 0.03%)</title><rect x="1148.6" y="69" width="0.3" height="15.0" fill="rgb(249,206,49)" rx="2" ry="2" />
+<text  x="1151.58" y="79.5" ></text>
+</g>
+<g >
+<title>add (261,095,424 total_ops, 0.09%)</title><rect x="207.0" y="69" width="1.1" height="15.0" fill="rgb(244,183,43)" rx="2" ry="2" />
+<text  x="210.01" y="79.5" ></text>
+</g>
+<g >
+<title>add (415,236,096 total_ops, 0.15%)</title><rect x="360.8" y="133" width="1.8" height="15.0" fill="rgb(244,183,43)" rx="2" ry="2" />
+<text  x="363.83" y="143.5" ></text>
+</g>
+<g >
+<title>compute_tf (163,577,856 total_ops, 0.06%)</title><rect x="102.3" y="37" width="0.7" height="15.0" fill="rgb(249,206,49)" rx="2" ry="2" />
+<text  x="105.32" y="47.5" ></text>
+</g>
+<g >
+<title>multiply_plain (1,071,906,816 total_ops, 0.38%)</title><rect x="280.0" y="101" width="4.5" height="15.0" fill="rgb(225,92,22)" rx="2" ry="2" />
+<text  x="283.01" y="111.5" ></text>
+</g>
+<g >
+<title>mult (56,623,104 total_ops, 0.02%)</title><rect x="695.0" y="85" width="0.2" height="15.0" fill="rgb(206,7,1)" rx="2" ry="2" />
+<text  x="697.99" y="95.5" ></text>
+</g>
+<g >
+<title>mod_down_divide (230,686,720 total_ops, 0.08%)</title><rect x="464.0" y="101" width="0.9" height="15.0" fill="rgb(213,38,9)" rx="2" ry="2" />
+<text  x="466.98" y="111.5" ></text>
+</g>
+<g >
+<title>ntt (1,458,044,928 total_ops, 0.52%)</title><rect x="316.9" y="69" width="6.1" height="15.0" fill="rgb(254,226,54)" rx="2" ry="2" />
+<text  x="319.91" y="79.5" ></text>
+</g>
+<g >
+<title>compute_phi (223,346,688 total_ops, 0.08%)</title><rect x="559.8" y="37" width="0.9" height="15.0" fill="rgb(234,135,32)" rx="2" ry="2" />
+<text  x="562.79" y="47.5" ></text>
+</g>
+<g >
+<title>compute_tf (54,263,808 total_ops, 0.02%)</title><rect x="89.1" y="37" width="0.2" height="15.0" fill="rgb(249,206,49)" rx="2" ry="2" />
+<text  x="92.09" y="47.5" ></text>
+</g>
+<g >
+<title>ntt_common (3,649,830,912 total_ops, 1.30%)</title><rect x="609.4" y="37" width="15.3" height="15.0" fill="rgb(248,198,47)" rx="2" ry="2" />
+<text  x="612.39" y="47.5" ></text>
+</g>
+<g >
+<title>decompose (56,623,104 total_ops, 0.02%)</title><rect x="285.1" y="85" width="0.3" height="15.0" fill="rgb(218,62,14)" rx="2" ry="2" />
+<text  x="288.15" y="95.5" ></text>
+</g>
+<g >
+<title>multiply (8,253,603,840 total_ops, 2.94%)</title><rect x="373.9" y="117" width="34.7" height="15.0" fill="rgb(225,94,22)" rx="2" ry="2" />
+<text  x="376.88" y="127.5" >mu..</text>
+</g>
+<g >
+<title>mult (27,000,832 total_ops, 0.01%)</title><rect x="329.6" y="101" width="0.1" height="15.0" fill="rgb(206,7,1)" rx="2" ry="2" />
+<text  x="332.61" y="111.5" ></text>
+</g>
+<g >
+<title>compute_phi (28,311,552 total_ops, 0.01%)</title><rect x="38.8" y="85" width="0.2" height="15.0" fill="rgb(234,135,32)" rx="2" ry="2" />
+<text  x="41.83" y="95.5" ></text>
+</g>
+<g >
+<title>multiply_plain (704,643,072 total_ops, 0.25%)</title><rect x="1124.9" y="101" width="3.0" height="15.0" fill="rgb(225,92,22)" rx="2" ry="2" />
+<text  x="1127.93" y="111.5" ></text>
+</g>
+<g >
+<title>ntt_common (721,944,576 total_ops, 0.26%)</title><rect x="294.1" y="53" width="3.0" height="15.0" fill="rgb(248,198,47)" rx="2" ry="2" />
+<text  x="297.09" y="63.5" ></text>
+</g>
+<g >
+<title>mult (261,095,424 total_ops, 0.09%)</title><rect x="208.1" y="69" width="1.1" height="15.0" fill="rgb(206,7,1)" rx="2" ry="2" />
+<text  x="211.10" y="79.5" ></text>
+</g>
+<g >
+<title>fft_inner_bsgs (63,761,547,264 total_ops, 22.71%)</title><rect x="16.5" y="133" width="268.0" height="15.0" fill="rgb(246,190,45)" rx="2" ry="2" />
+<text  x="19.51" y="143.5" >fft_inner_bsgs</text>
+</g>
+<g >
+<title>mult (136,839,168 total_ops, 0.05%)</title><rect x="347.1" y="69" width="0.6" height="15.0" fill="rgb(206,7,1)" rx="2" ry="2" />
+<text  x="350.12" y="79.5" ></text>
+</g>
+<g >
+<title>add (415,236,096 total_ops, 0.15%)</title><rect x="360.8" y="117" width="1.8" height="15.0" fill="rgb(244,183,43)" rx="2" ry="2" />
+<text  x="363.83" y="127.5" ></text>
+</g>
+<g >
+<title>mult (143,130,624 total_ops, 0.05%)</title><rect x="589.9" y="53" width="0.6" height="15.0" fill="rgb(206,7,1)" rx="2" ry="2" />
+<text  x="592.90" y="63.5" ></text>
+</g>
+<g >
+<title>ntt (4,756,340,736 total_ops, 1.69%)</title><rect x="650.9" y="69" width="19.9" height="15.0" fill="rgb(254,226,54)" rx="2" ry="2" />
+<text  x="653.85" y="79.5" ></text>
+</g>
+<g >
+<title>ntt_common (1,143,078,912 total_ops, 0.41%)</title><rect x="33.7" y="69" width="4.8" height="15.0" fill="rgb(248,198,47)" rx="2" ry="2" />
+<text  x="36.70" y="79.5" ></text>
+</g>
+<g >
+<title>mod_down_divide (522,190,848 total_ops, 0.19%)</title><rect x="207.0" y="85" width="2.2" height="15.0" fill="rgb(213,38,9)" rx="2" ry="2" />
+<text  x="210.01" y="95.5" ></text>
+</g>
+<g >
+<title>mod_down (2,376,073,216 total_ops, 0.85%)</title><rect x="1048.6" y="133" width="10.0" height="15.0" fill="rgb(240,162,38)" rx="2" ry="2" />
+<text  x="1051.59" y="143.5" ></text>
+</g>
+<g >
+<title>intt (1,833,172,992 total_ops, 0.65%)</title><rect x="643.1" y="69" width="7.8" height="15.0" fill="rgb(225,96,23)" rx="2" ry="2" />
+<text  x="646.15" y="79.5" ></text>
+</g>
+<g >
+<title>mult (176,160,768 total_ops, 0.06%)</title><rect x="627.9" y="69" width="0.7" height="15.0" fill="rgb(206,7,1)" rx="2" ry="2" />
+<text  x="630.89" y="79.5" ></text>
+</g>
+<g >
+<title>intt (403,439,616 total_ops, 0.14%)</title><rect x="31.7" y="85" width="1.7" height="15.0" fill="rgb(225,96,23)" rx="2" ry="2" />
+<text  x="34.72" y="95.5" ></text>
+</g>
+<g >
+<title>mod_down (2,102,919,168 total_ops, 0.75%)</title><rect x="347.7" y="101" width="8.8" height="15.0" fill="rgb(240,162,38)" rx="2" ry="2" />
+<text  x="350.70" y="111.5" ></text>
+</g>
+<g >
+<title>ntt_common (842,268,672 total_ops, 0.30%)</title><rect x="353.0" y="53" width="3.5" height="15.0" fill="rgb(248,198,47)" rx="2" ry="2" />
+<text  x="355.99" y="63.5" ></text>
+</g>
+<g >
+<title>mod_down_divide (66,060,288 total_ops, 0.02%)</title><rect x="347.7" y="85" width="0.3" height="15.0" fill="rgb(213,38,9)" rx="2" ry="2" />
+<text  x="350.70" y="95.5" ></text>
+</g>
+<g >
+<title>compute_phi (68,419,584 total_ops, 0.02%)</title><rect x="382.5" y="53" width="0.3" height="15.0" fill="rgb(234,135,32)" rx="2" ry="2" />
+<text  x="385.51" y="63.5" ></text>
+</g>
+<g >
+<title>mult (57,671,680 total_ops, 0.02%)</title><rect x="508.7" y="117" width="0.2" height="15.0" fill="rgb(206,7,1)" rx="2" ry="2" />
+<text  x="511.69" y="127.5" ></text>
+</g>
+<g >
+<title>add (576,192,512 total_ops, 0.21%)</title><rect x="624.7" y="101" width="2.5" height="15.0" fill="rgb(244,183,43)" rx="2" ry="2" />
+<text  x="627.73" y="111.5" ></text>
+</g>
+<g >
+<title>basis_convert (155,713,536 total_ops, 0.06%)</title><rect x="1059.0" y="117" width="0.6" height="15.0" fill="rgb(208,15,3)" rx="2" ry="2" />
+<text  x="1061.99" y="127.5" ></text>
+</g>
+<g >
+<title>compute_tf (34,078,720 total_ops, 0.01%)</title><rect x="1140.4" y="69" width="0.2" height="15.0" fill="rgb(249,206,49)" rx="2" ry="2" />
+<text  x="1143.43" y="79.5" ></text>
+</g>
+<g >
+<title>iteration (122,783,006,720 total_ops, 43.74%)</title><rect x="673.9" y="165" width="516.1" height="15.0" fill="rgb(215,46,11)" rx="2" ry="2" />
+<text  x="676.92" y="175.5" >iteration</text>
+</g>
+<g >
+<title>compute_phi (108,527,616 total_ops, 0.04%)</title><rect x="88.6" y="37" width="0.5" height="15.0" fill="rgb(234,135,32)" rx="2" ry="2" />
+<text  x="91.63" y="47.5" ></text>
+</g>
+<g >
+<title>compute_phi (44,040,192 total_ops, 0.02%)</title><rect x="1053.6" y="85" width="0.2" height="15.0" fill="rgb(234,135,32)" rx="2" ry="2" />
+<text  x="1056.58" y="95.5" ></text>
+</g>
+<g >
+<title>ntt_common (762,052,608 total_ops, 0.27%)</title><rect x="679.7" y="69" width="3.2" height="15.0" fill="rgb(248,198,47)" rx="2" ry="2" />
+<text  x="682.70" y="79.5" ></text>
+</g>
+<g >
+<title>mod_down (9,257,877,504 total_ops, 3.30%)</title><rect x="1127.9" y="117" width="38.9" height="15.0" fill="rgb(240,162,38)" rx="2" ry="2" />
+<text  x="1130.89" y="127.5" >mod..</text>
+</g>
+<g >
+<title>add (1,912,602,624 total_ops, 0.68%)</title><rect x="718.7" y="101" width="8.0" height="15.0" fill="rgb(244,183,43)" rx="2" ry="2" />
+<text  x="721.67" y="111.5" ></text>
+</g>
+<g >
+<title>compute_phi (421,527,552 total_ops, 0.15%)</title><rect x="977.0" y="69" width="1.8" height="15.0" fill="rgb(234,135,32)" rx="2" ry="2" />
+<text  x="980.04" y="79.5" ></text>
+</g>
+<g >
+<title>add (31,981,568 total_ops, 0.01%)</title><rect x="333.8" y="101" width="0.1" height="15.0" fill="rgb(244,183,43)" rx="2" ry="2" />
+<text  x="336.75" y="111.5" ></text>
+</g>
+<g >
+<title>ntt (1,380,188,160 total_ops, 0.49%)</title><rect x="340.9" y="69" width="5.8" height="15.0" fill="rgb(254,226,54)" rx="2" ry="2" />
+<text  x="343.94" y="79.5" ></text>
+</g>
+<g >
+<title>mult (166,723,584 total_ops, 0.06%)</title><rect x="1128.6" y="85" width="0.7" height="15.0" fill="rgb(206,7,1)" rx="2" ry="2" />
+<text  x="1131.59" y="95.5" ></text>
+</g>
+<g >
+<title>add (469,762,048 total_ops, 0.17%)</title><rect x="1123.0" y="85" width="1.9" height="15.0" fill="rgb(244,183,43)" rx="2" ry="2" />
+<text  x="1125.95" y="95.5" ></text>
+</g>
+<g >
+<title>compute_phi (157,286,400 total_ops, 0.06%)</title><rect x="1169.2" y="85" width="0.7" height="15.0" fill="rgb(234,135,32)" rx="2" ry="2" />
+<text  x="1172.20" y="95.5" ></text>
+</g>
+<g >
+<title>double_multiply (8,296,071,168 total_ops, 2.96%)</title><rect x="373.7" y="133" width="34.9" height="15.0" fill="rgb(209,21,5)" rx="2" ry="2" />
+<text  x="376.70" y="143.5" >do..</text>
+</g>
+<g >
+<title>compute_phi (51,118,080 total_ops, 0.02%)</title><rect x="340.9" y="53" width="0.3" height="15.0" fill="rgb(234,135,32)" rx="2" ry="2" />
+<text  x="343.94" y="63.5" ></text>
+</g>
+<g >
+<title>compute_phi (115,343,360 total_ops, 0.04%)</title><rect x="481.6" y="69" width="0.5" height="15.0" fill="rgb(234,135,32)" rx="2" ry="2" />
+<text  x="484.57" y="79.5" ></text>
+</g>
+<g >
+<title>mult (44,040,192 total_ops, 0.02%)</title><rect x="408.4" y="85" width="0.2" height="15.0" fill="rgb(206,7,1)" rx="2" ry="2" />
+<text  x="411.39" y="95.5" ></text>
+</g>
+<g >
+<title>add (44,040,192 total_ops, 0.02%)</title><rect x="373.9" y="85" width="0.2" height="15.0" fill="rgb(244,183,43)" rx="2" ry="2" />
+<text  x="376.88" y="95.5" ></text>
+</g>
+<g >
+<title>ntt_common (1,524,105,216 total_ops, 0.54%)</title><rect x="434.0" y="69" width="6.4" height="15.0" fill="rgb(248,198,47)" rx="2" ry="2" />
+<text  x="436.98" y="79.5" ></text>
+</g>
+<g >
+<title>intt (92,012,544 total_ops, 0.03%)</title><rect x="15.1" y="69" width="0.4" height="15.0" fill="rgb(225,96,23)" rx="2" ry="2" />
+<text  x="18.08" y="79.5" ></text>
+</g>
+<g >
+<title>compute_phi (68,157,440 total_ops, 0.02%)</title><rect x="1140.1" y="69" width="0.3" height="15.0" fill="rgb(234,135,32)" rx="2" ry="2" />
+<text  x="1143.15" y="79.5" ></text>
+</g>
+<g >
+<title>compute_phi (143,130,624 total_ops, 0.05%)</title><rect x="608.5" y="37" width="0.6" height="15.0" fill="rgb(234,135,32)" rx="2" ry="2" />
+<text  x="611.49" y="47.5" ></text>
+</g>
+<g >
+<title>mult (594,542,592 total_ops, 0.21%)</title><rect x="586.8" y="53" width="2.5" height="15.0" fill="rgb(206,7,1)" rx="2" ry="2" />
+<text  x="589.80" y="63.5" ></text>
+</g>
+<g >
+<title>ntt (4,820,041,728 total_ops, 1.72%)</title><rect x="440.4" y="85" width="20.2" height="15.0" fill="rgb(254,226,54)" rx="2" ry="2" />
+<text  x="443.38" y="95.5" ></text>
+</g>
+<g >
+<title>add (91,226,112 total_ops, 0.03%)</title><rect x="346.7" y="85" width="0.4" height="15.0" fill="rgb(244,183,43)" rx="2" ry="2" />
+<text  x="349.74" y="95.5" ></text>
+</g>
+<g >
+<title>multiply_plain (553,648,128 total_ops, 0.20%)</title><rect x="371.3" y="133" width="2.3" height="15.0" fill="rgb(225,92,22)" rx="2" ry="2" />
+<text  x="374.28" y="143.5" ></text>
+</g>
+<g >
+<title>mult (115,343,360 total_ops, 0.04%)</title><rect x="510.4" y="117" width="0.5" height="15.0" fill="rgb(206,7,1)" rx="2" ry="2" />
+<text  x="513.39" y="127.5" ></text>
+</g>
+<g >
+<title>ntt (19,619,905,536 total_ops, 6.99%)</title><rect x="794.4" y="85" width="82.5" height="15.0" fill="rgb(254,226,54)" rx="2" ry="2" />
+<text  x="797.41" y="95.5" >ntt</text>
+</g>
+<g >
+<title>mult (33,030,144 total_ops, 0.01%)</title><rect x="360.7" y="85" width="0.1" height="15.0" fill="rgb(206,7,1)" rx="2" ry="2" />
+<text  x="363.69" y="95.5" ></text>
+</g>
+<g >
+<title>add (111,673,344 total_ops, 0.04%)</title><rect x="408.6" y="117" width="0.4" height="15.0" fill="rgb(244,183,43)" rx="2" ry="2" />
+<text  x="411.57" y="127.5" ></text>
+</g>
+<g >
+<title>nesterov_update (835,190,784 total_ops, 0.30%)</title><rect x="1025.8" y="149" width="3.5" height="15.0" fill="rgb(222,81,19)" rx="2" ry="2" />
+<text  x="1028.79" y="159.5" ></text>
+</g>
+<g >
+<title>mult (54,001,664 total_ops, 0.02%)</title><rect x="308.4" y="69" width="0.2" height="15.0" fill="rgb(206,7,1)" rx="2" ry="2" />
+<text  x="311.38" y="79.5" ></text>
+</g>
+<g >
+<title>mod_reduce_rescale (1,668,808,704 total_ops, 0.59%)</title><rect x="409.0" y="133" width="7.1" height="15.0" fill="rgb(238,153,36)" rx="2" ry="2" />
+<text  x="412.04" y="143.5" ></text>
+</g>
+<g >
+<title>compute_phi (96,206,848 total_ops, 0.03%)</title><rect x="239.5" y="53" width="0.4" height="15.0" fill="rgb(234,135,32)" rx="2" ry="2" />
+<text  x="242.46" y="63.5" ></text>
+</g>
+<g >
+<title>compute_phi (176,160,768 total_ops, 0.06%)</title><rect x="650.9" y="53" width="0.7" height="15.0" fill="rgb(234,135,32)" rx="2" ry="2" />
+<text  x="653.85" y="63.5" ></text>
+</g>
+<g >
+<title>compute_phi (111,673,344 total_ops, 0.04%)</title><rect x="496.0" y="85" width="0.5" height="15.0" fill="rgb(234,135,32)" rx="2" ry="2" />
+<text  x="499.02" y="95.5" ></text>
+</g>
+<g >
+<title>ntt_common (521,404,416 total_ops, 0.19%)</title><rect x="314.7" y="53" width="2.2" height="15.0" fill="rgb(248,198,47)" rx="2" ry="2" />
+<text  x="317.72" y="63.5" ></text>
+</g>
+<g >
+<title>intt (1,840,250,880 total_ops, 0.66%)</title><rect x="1140.1" y="85" width="7.8" height="15.0" fill="rgb(225,96,23)" rx="2" ry="2" />
+<text  x="1143.15" y="95.5" ></text>
+</g>
+<g >
+<title>add (44,040,192 total_ops, 0.02%)</title><rect x="373.9" y="101" width="0.2" height="15.0" fill="rgb(244,183,43)" rx="2" ry="2" />
+<text  x="376.88" y="111.5" ></text>
+</g>
+<g >
+<title>ntt (7,134,511,104 total_ops, 2.54%)</title><rect x="1093.0" y="85" width="30.0" height="15.0" fill="rgb(254,226,54)" rx="2" ry="2" />
+<text  x="1095.97" y="95.5" >ntt</text>
+</g>
+<g >
+<title>ntt_common (2,125,725,696 total_ops, 0.76%)</title><rect x="297.7" y="53" width="8.9" height="15.0" fill="rgb(248,198,47)" rx="2" ry="2" />
+<text  x="300.65" y="63.5" ></text>
+</g>
+<g >
+<title>compute_tf (57,671,680 total_ops, 0.02%)</title><rect x="482.1" y="69" width="0.2" height="15.0" fill="rgb(249,206,49)" rx="2" ry="2" />
+<text  x="485.06" y="79.5" ></text>
+</g>
+<g >
+<title>ntt_common (1,443,889,152 total_ops, 0.51%)</title><rect x="701.9" y="69" width="6.1" height="15.0" fill="rgb(248,198,47)" rx="2" ry="2" />
+<text  x="704.92" y="79.5" ></text>
+</g>
+<g >
+<title>intt (552,075,264 total_ops, 0.20%)</title><rect x="314.6" y="69" width="2.3" height="15.0" fill="rgb(225,96,23)" rx="2" ry="2" />
+<text  x="317.59" y="79.5" ></text>
+</g>
+<g >
+<title>compute_tf (39,059,456 total_ops, 0.01%)</title><rect x="170.8" y="37" width="0.2" height="15.0" fill="rgb(249,206,49)" rx="2" ry="2" />
+<text  x="173.82" y="47.5" ></text>
+</g>
+<g >
+<title>compute_tf (44,040,192 total_ops, 0.02%)</title><rect x="1083.3" y="69" width="0.2" height="15.0" fill="rgb(249,206,49)" rx="2" ry="2" />
+<text  x="1086.34" y="79.5" ></text>
+</g>
+<g >
+<title>compute_phi (166,723,584 total_ops, 0.06%)</title><rect x="1147.9" y="69" width="0.7" height="15.0" fill="rgb(234,135,32)" rx="2" ry="2" />
+<text  x="1150.88" y="79.5" ></text>
+</g>
+<g >
+<title>add (111,673,344 total_ops, 0.04%)</title><rect x="408.6" y="133" width="0.4" height="15.0" fill="rgb(244,183,43)" rx="2" ry="2" />
+<text  x="411.57" y="143.5" ></text>
+</g>
+<g >
+<title>add (469,762,048 total_ops, 0.17%)</title><rect x="1123.0" y="101" width="1.9" height="15.0" fill="rgb(244,183,43)" rx="2" ry="2" />
+<text  x="1125.95" y="111.5" ></text>
+</g>
+<g >
+<title>add_plain (26,738,688 total_ops, 0.01%)</title><rect x="1058.9" y="133" width="0.1" height="15.0" fill="rgb(244,182,43)" rx="2" ry="2" />
+<text  x="1061.88" y="143.5" ></text>
+</g>
+<g >
+<title>compute_tf (34,209,792 total_ops, 0.01%)</title><rect x="382.8" y="53" width="0.1" height="15.0" fill="rgb(249,206,49)" rx="2" ry="2" />
+<text  x="385.80" y="63.5" ></text>
+</g>
+<g >
+<title>compute_phi (29,884,416 total_ops, 0.01%)</title><rect x="679.5" y="69" width="0.1" height="15.0" fill="rgb(234,135,32)" rx="2" ry="2" />
+<text  x="682.51" y="79.5" ></text>
+</g>
+<g >
+<title>key_switch_inner_product (372,244,480 total_ops, 0.13%)</title><rect x="306.6" y="101" width="1.5" height="15.0" fill="rgb(240,163,39)" rx="2" ry="2" />
+<text  x="309.58" y="111.5" ></text>
+</g>
+<g >
+<title>ntt (3,015,180,288 total_ops, 1.07%)</title><rect x="496.0" y="101" width="12.7" height="15.0" fill="rgb(254,226,54)" rx="2" ry="2" />
+<text  x="499.02" y="111.5" ></text>
+</g>
+<g >
+<title>ntt (1,847,328,768 total_ops, 0.66%)</title><rect x="382.5" y="69" width="7.8" height="15.0" fill="rgb(254,226,54)" rx="2" ry="2" />
+<text  x="385.51" y="79.5" ></text>
+</g>
+<g >
+<title>compute_phi (212,336,640 total_ops, 0.08%)</title><rect x="179.4" y="37" width="0.8" height="15.0" fill="rgb(234,135,32)" rx="2" ry="2" />
+<text  x="182.36" y="47.5" ></text>
+</g>
+<g >
+<title>multiply_plain (732,168,192 total_ops, 0.26%)</title><rect x="670.8" y="101" width="3.1" height="15.0" fill="rgb(225,92,22)" rx="2" ry="2" />
+<text  x="673.84" y="111.5" ></text>
+</g>
+<g >
+<title>mod_down (8,428,978,176 total_ops, 3.00%)</title><rect x="589.3" y="85" width="35.4" height="15.0" fill="rgb(240,162,38)" rx="2" ry="2" />
+<text  x="592.30" y="95.5" >mod..</text>
+</g>
+<g >
+<title>add (26,738,688 total_ops, 0.01%)</title><rect x="1058.9" y="117" width="0.1" height="15.0" fill="rgb(244,183,43)" rx="2" ry="2" />
+<text  x="1061.88" y="127.5" ></text>
+</g>
+<g >
+<title>ntt (297,271,296 total_ops, 0.11%)</title><rect x="1026.6" y="117" width="1.3" height="15.0" fill="rgb(254,226,54)" rx="2" ry="2" />
+<text  x="1029.63" y="127.5" ></text>
+</g>
+<g >
+<title>add (44,040,192 total_ops, 0.02%)</title><rect x="1048.6" y="101" width="0.2" height="15.0" fill="rgb(244,183,43)" rx="2" ry="2" />
+<text  x="1051.59" y="111.5" ></text>
+</g>
+<g >
+<title>intt (49,545,216 total_ops, 0.02%)</title><rect x="409.5" y="117" width="0.2" height="15.0" fill="rgb(225,96,23)" rx="2" ry="2" />
+<text  x="412.51" y="127.5" ></text>
+</g>
+<g >
+<title>ntt_common (5,414,584,320 total_ops, 1.93%)</title><rect x="180.7" y="37" width="22.8" height="15.0" fill="rgb(248,198,47)" rx="2" ry="2" />
+<text  x="183.69" y="47.5" >n..</text>
+</g>
+<g >
+<title>ntt_common (5,855,772,672 total_ops, 2.09%)</title><rect x="769.8" y="69" width="24.6" height="15.0" fill="rgb(248,198,47)" rx="2" ry="2" />
+<text  x="772.79" y="79.5" >n..</text>
+</g>
+<g >
+<title>ntt_common (86,900,736 total_ops, 0.03%)</title><rect x="15.1" y="53" width="0.4" height="15.0" fill="rgb(248,198,47)" rx="2" ry="2" />
+<text  x="18.11" y="63.5" ></text>
+</g>
+<g >
+<title>mod_down_divide (286,261,248 total_ops, 0.10%)</title><rect x="589.3" y="69" width="1.2" height="15.0" fill="rgb(213,38,9)" rx="2" ry="2" />
+<text  x="592.30" y="79.5" ></text>
+</g>
+<g >
+<title>fft_inner_bsgs (38,784,466,944 total_ops, 13.82%)</title><rect x="510.9" y="133" width="163.0" height="15.0" fill="rgb(246,190,45)" rx="2" ry="2" />
+<text  x="513.90" y="143.5" >fft_inner_bsgs</text>
+</g>
+<g >
+<title>mod_down (17,368,612,864 total_ops, 6.19%)</title><rect x="207.0" y="101" width="73.0" height="15.0" fill="rgb(240,162,38)" rx="2" ry="2" />
+<text  x="210.01" y="111.5" >mod_down</text>
+</g>
+<g >
+<title>mod_raise (13,048,479,744 total_ops, 4.65%)</title><rect x="1068.1" y="101" width="54.9" height="15.0" fill="rgb(246,188,45)" rx="2" ry="2" />
+<text  x="1071.11" y="111.5" >mod_r..</text>
+</g>
+<g >
+<title>ntt_common (53,477,376 total_ops, 0.02%)</title><rect x="363.4" y="101" width="0.3" height="15.0" fill="rgb(248,198,47)" rx="2" ry="2" />
+<text  x="366.44" y="111.5" ></text>
+</g>
+<g >
+<title>ntt_common (481,296,384 total_ops, 0.17%)</title><rect x="1051.6" y="85" width="2.0" height="15.0" fill="rgb(248,198,47)" rx="2" ry="2" />
+<text  x="1054.55" y="95.5" ></text>
+</g>
+<g >
+<title>intt (5,832,179,712 total_ops, 2.08%)</title><rect x="952.5" y="85" width="24.5" height="15.0" fill="rgb(225,96,23)" rx="2" ry="2" />
+<text  x="955.53" y="95.5" >i..</text>
+</g>
+<g >
+<title>logistic_regression (122,783,006,720 total_ops, 43.74%)</title><rect x="673.9" y="181" width="516.1" height="15.0" fill="rgb(246,191,45)" rx="2" ry="2" />
+<text  x="676.92" y="191.5" >logistic_regression</text>
+</g>
+<g >
+<title>multiply_plain (476,577,792 total_ops, 0.17%)</title><rect x="462.0" y="101" width="2.0" height="15.0" fill="rgb(225,92,22)" rx="2" ry="2" />
+<text  x="464.98" y="111.5" ></text>
+</g>
+<g >
+<title>multiply_plain (54,001,664 total_ops, 0.02%)</title><rect x="333.5" y="133" width="0.2" height="15.0" fill="rgb(225,92,22)" rx="2" ry="2" />
+<text  x="336.46" y="143.5" ></text>
+</g>
+<g >
+<title>ntt (863,502,336 total_ops, 0.31%)</title><rect x="356.9" y="85" width="3.7" height="15.0" fill="rgb(254,226,54)" rx="2" ry="2" />
+<text  x="359.92" y="95.5" ></text>
+</g>
+<g >
+<title>mod_down_reduce (8,924,430,336 total_ops, 3.18%)</title><rect x="1129.3" y="101" width="37.5" height="15.0" fill="rgb(244,179,42)" rx="2" ry="2" />
+<text  x="1132.29" y="111.5" >mod..</text>
+</g>
+<g >
+<title>partial_multiply_inner (169,869,312 total_ops, 0.06%)</title><rect x="715.0" y="117" width="0.7" height="15.0" fill="rgb(221,75,17)" rx="2" ry="2" />
+<text  x="717.98" y="127.5" ></text>
+</g>
+<g >
+<title>double_multiply (10,819,731,456 total_ops, 3.85%)</title><rect x="284.7" y="133" width="45.5" height="15.0" fill="rgb(209,21,5)" rx="2" ry="2" />
+<text  x="287.70" y="143.5" >doub..</text>
+</g>
+<g >
+<title>partial_multiply_inner (49,545,216 total_ops, 0.02%)</title><rect x="360.6" y="101" width="0.2" height="15.0" fill="rgb(221,75,17)" rx="2" ry="2" />
+<text  x="363.62" y="111.5" ></text>
+</g>
+<g >
+<title>mod_reduce_rescale (1,562,902,528 total_ops, 0.56%)</title><rect x="323.0" y="101" width="6.6" height="15.0" fill="rgb(238,153,36)" rx="2" ry="2" />
+<text  x="326.04" y="111.5" ></text>
+</g>
+<g >
+<title>mod_reduce_rescale (1,274,019,840 total_ops, 0.45%)</title><rect x="402.8" y="101" width="5.4" height="15.0" fill="rgb(238,153,36)" rx="2" ry="2" />
+<text  x="405.85" y="111.5" ></text>
+</g>
+<g >
+<title>add (166,723,584 total_ops, 0.06%)</title><rect x="1066.7" y="101" width="0.7" height="15.0" fill="rgb(244,183,43)" rx="2" ry="2" />
+<text  x="1069.67" y="111.5" ></text>
+</g>
+<g >
+<title>intt (339,738,624 total_ops, 0.12%)</title><rect x="351.4" y="69" width="1.4" height="15.0" fill="rgb(225,96,23)" rx="2" ry="2" />
+<text  x="354.36" y="79.5" ></text>
+</g>
+<g >
+<title>mod_down_reduce (581,697,536 total_ops, 0.21%)</title><rect x="14.1" y="85" width="2.4" height="15.0" fill="rgb(244,179,42)" rx="2" ry="2" />
+<text  x="17.07" y="95.5" ></text>
+</g>
+<g >
+<title>compute_phi (56,623,104 total_ops, 0.02%)</title><rect x="701.6" y="69" width="0.2" height="15.0" fill="rgb(234,135,32)" rx="2" ry="2" />
+<text  x="704.56" y="79.5" ></text>
+</g>
+<g >
+<title>add (33,030,144 total_ops, 0.01%)</title><rect x="347.7" y="69" width="0.1" height="15.0" fill="rgb(244,183,43)" rx="2" ry="2" />
+<text  x="350.70" y="79.5" ></text>
+</g>
+<g >
+<title>add (54,001,664 total_ops, 0.02%)</title><rect x="284.9" y="85" width="0.2" height="15.0" fill="rgb(244,183,43)" rx="2" ry="2" />
+<text  x="287.92" y="95.5" ></text>
+</g>
+<g >
+<title>ntt_common (782,106,624 total_ops, 0.28%)</title><rect x="521.5" y="69" width="3.3" height="15.0" fill="rgb(248,198,47)" rx="2" ry="2" />
+<text  x="524.52" y="79.5" ></text>
+</g>
+<g >
+<title>multiply_plain (37,748,736 total_ops, 0.01%)</title><rect x="13.8" y="85" width="0.2" height="15.0" fill="rgb(225,92,22)" rx="2" ry="2" />
+<text  x="16.83" y="95.5" ></text>
+</g>
+<g >
+<title>compute_phi (30,670,848 total_ops, 0.01%)</title><rect x="521.3" y="69" width="0.2" height="15.0" fill="rgb(234,135,32)" rx="2" ry="2" />
+<text  x="524.33" y="79.5" ></text>
+</g>
+<g >
+<title>add (25,165,824 total_ops, 0.01%)</title><rect x="13.7" y="69" width="0.1" height="15.0" fill="rgb(244,183,43)" rx="2" ry="2" />
+<text  x="16.73" y="79.5" ></text>
+</g>
+<g >
+<title>ntt_common (1,731,330,048 total_ops, 0.62%)</title><rect x="643.6" y="53" width="7.3" height="15.0" fill="rgb(248,198,47)" rx="2" ry="2" />
+<text  x="646.57" y="63.5" ></text>
+</g>
+<g >
+<title>compute_phi (44,040,192 total_ops, 0.02%)</title><rect x="397.9" y="53" width="0.1" height="15.0" fill="rgb(234,135,32)" rx="2" ry="2" />
+<text  x="400.85" y="63.5" ></text>
+</g>
+<g >
+<title>key_switch_inner_product (1,174,405,120 total_ops, 0.42%)</title><rect x="1123.0" y="117" width="4.9" height="15.0" fill="rgb(240,163,39)" rx="2" ry="2" />
+<text  x="1125.95" y="127.5" ></text>
+</g>
+<g >
+<title>basis_convert (5,834,801,152 total_ops, 2.08%)</title><rect x="146.0" y="53" width="24.5" height="15.0" fill="rgb(208,15,3)" rx="2" ry="2" />
+<text  x="148.97" y="63.5" >b..</text>
+</g>
+<g >
+<title>mult (732,168,192 total_ops, 0.26%)</title><rect x="670.8" y="85" width="3.1" height="15.0" fill="rgb(206,7,1)" rx="2" ry="2" />
+<text  x="673.84" y="95.5" ></text>
+</g>
+<g >
+<title>ntt_common (260,702,208 total_ops, 0.09%)</title><rect x="1028.1" y="101" width="1.1" height="15.0" fill="rgb(248,198,47)" rx="2" ry="2" />
+<text  x="1031.12" y="111.5" ></text>
+</g>
+<g >
+<title>add (54,001,664 total_ops, 0.02%)</title><rect x="284.9" y="101" width="0.2" height="15.0" fill="rgb(244,183,43)" rx="2" ry="2" />
+<text  x="287.92" y="111.5" ></text>
+</g>
+<g >
+<title>mod_reduce_rescale (2,002,780,160 total_ops, 0.71%)</title><rect x="362.9" y="133" width="8.4" height="15.0" fill="rgb(238,153,36)" rx="2" ry="2" />
+<text  x="365.87" y="143.5" ></text>
+</g>
+<g >
+<title>mod_down_reduce (3,434,610,688 total_ops, 1.22%)</title><rect x="308.6" y="85" width="14.4" height="15.0" fill="rgb(244,179,42)" rx="2" ry="2" />
+<text  x="311.60" y="95.5" ></text>
+</g>
+<g >
+<title>compute_phi (59,768,832 total_ops, 0.02%)</title><rect x="433.6" y="69" width="0.2" height="15.0" fill="rgb(234,135,32)" rx="2" ry="2" />
+<text  x="436.60" y="79.5" ></text>
+</g>
+<g >
+<title>ntt_common (1,992,032,256 total_ops, 0.71%)</title><rect x="171.0" y="37" width="8.4" height="15.0" fill="rgb(248,198,47)" rx="2" ry="2" />
+<text  x="173.98" y="47.5" ></text>
+</g>
+<g >
+<title>mult (871,366,656 total_ops, 0.31%)</title><rect x="140.5" y="53" width="3.7" height="15.0" fill="rgb(206,7,1)" rx="2" ry="2" />
+<text  x="143.52" y="63.5" ></text>
+</g>
+<g >
+<title>compute_phi (26,214,400 total_ops, 0.01%)</title><rect x="330.5" y="101" width="0.1" height="15.0" fill="rgb(234,135,32)" rx="2" ry="2" />
+<text  x="333.48" y="111.5" ></text>
+</g>
+<g >
+<title>ntt (707,788,800 total_ops, 0.25%)</title><rect x="330.5" y="117" width="3.0" height="15.0" fill="rgb(254,226,54)" rx="2" ry="2" />
+<text  x="333.48" y="127.5" ></text>
+</g>
+<g >
+<title>add (52,428,800 total_ops, 0.02%)</title><rect x="284.7" y="101" width="0.2" height="15.0" fill="rgb(244,183,43)" rx="2" ry="2" />
+<text  x="287.70" y="111.5" ></text>
+</g>
+<g >
+<title>mult (421,527,552 total_ops, 0.15%)</title><rect x="918.8" y="85" width="1.8" height="15.0" fill="rgb(206,7,1)" rx="2" ry="2" />
+<text  x="921.84" y="95.5" ></text>
+</g>
+<g >
+<title>basis_convert (241,958,912 total_ops, 0.09%)</title><rect x="14.1" y="69" width="1.0" height="15.0" fill="rgb(208,15,3)" rx="2" ry="2" />
+<text  x="17.07" y="79.5" ></text>
+</g>
+<g >
+<title>ntt (247,726,080 total_ops, 0.09%)</title><rect x="15.5" y="69" width="1.0" height="15.0" fill="rgb(254,226,54)" rx="2" ry="2" />
+<text  x="18.47" y="79.5" ></text>
+</g>
+<g >
+<title>mod_raise (10,372,251,648 total_ops, 3.69%)</title><rect x="417.0" y="101" width="43.6" height="15.0" fill="rgb(246,188,45)" rx="2" ry="2" />
+<text  x="420.04" y="111.5" >mod_..</text>
+</g>
+<g >
+<title>compute_tf (111,673,344 total_ops, 0.04%)</title><rect x="560.7" y="37" width="0.5" height="15.0" fill="rgb(249,206,49)" rx="2" ry="2" />
+<text  x="563.73" y="47.5" ></text>
+</g>
+<g >
+<title>multiply_plain (56,623,104 total_ops, 0.02%)</title><rect x="715.7" y="133" width="0.2" height="15.0" fill="rgb(225,92,22)" rx="2" ry="2" />
+<text  x="718.70" y="143.5" ></text>
+</g>
+<g >
+<title>ntt_common (46,792,704 total_ops, 0.02%)</title><rect x="409.5" y="101" width="0.2" height="15.0" fill="rgb(248,198,47)" rx="2" ry="2" />
+<text  x="412.52" y="111.5" ></text>
+</g>
+<g >
+<title>compute_phi (55,836,672 total_ops, 0.02%)</title><rect x="409.7" y="101" width="0.3" height="15.0" fill="rgb(234,135,32)" rx="2" ry="2" />
+<text  x="412.72" y="111.5" ></text>
+</g>
+<g >
+<title>compute_phi (33,030,144 total_ops, 0.01%)</title><rect x="352.8" y="53" width="0.1" height="15.0" fill="rgb(234,135,32)" rx="2" ry="2" />
+<text  x="355.79" y="63.5" ></text>
+</g>
+<g >
+<title>mod_raise (3,810,263,040 total_ops, 1.36%)</title><rect x="374.3" y="85" width="16.0" height="15.0" fill="rgb(246,188,45)" rx="2" ry="2" />
+<text  x="377.26" y="95.5" ></text>
+</g>
+<g >
+<title>compute_phi (70,778,880 total_ops, 0.03%)</title><rect x="1036.6" y="85" width="0.3" height="15.0" fill="rgb(234,135,32)" rx="2" ry="2" />
+<text  x="1039.59" y="95.5" ></text>
+</g>
+<g >
+<title>mod_down_reduce (962,592,768 total_ops, 0.34%)</title><rect x="1059.0" y="133" width="4.0" height="15.0" fill="rgb(244,179,42)" rx="2" ry="2" />
+<text  x="1061.99" y="143.5" ></text>
+</g>
+<g >
+<title>basis_convert (9,446,621,184 total_ops, 3.36%)</title><rect x="728.6" y="85" width="39.7" height="15.0" fill="rgb(208,15,3)" rx="2" ry="2" />
+<text  x="731.64" y="95.5" >bas..</text>
+</g>
+<g >
+<title>add (71,565,312 total_ops, 0.03%)</title><rect x="534.1" y="85" width="0.3" height="15.0" fill="rgb(244,183,43)" rx="2" ry="2" />
+<text  x="537.10" y="95.5" ></text>
+</g>
+<g >
+<title>key_switch_inner_product (62,914,560 total_ops, 0.02%)</title><rect x="13.7" y="101" width="0.3" height="15.0" fill="rgb(240,163,39)" rx="2" ry="2" />
+<text  x="16.73" y="111.5" ></text>
+</g>
+<g >
+<title>ntt_common (5,508,169,728 total_ops, 1.96%)</title><rect x="953.9" y="69" width="23.1" height="15.0" fill="rgb(248,198,47)" rx="2" ry="2" />
+<text  x="956.89" y="79.5" >n..</text>
+</g>
+<g >
+<title>mult (166,723,584 total_ops, 0.06%)</title><rect x="1188.8" y="101" width="0.7" height="15.0" fill="rgb(206,7,1)" rx="2" ry="2" />
+<text  x="1191.80" y="111.5" ></text>
+</g>
+<g >
+<title>ntt_common (2,246,049,792 total_ops, 0.80%)</title><rect x="1083.5" y="69" width="9.5" height="15.0" fill="rgb(248,198,47)" rx="2" ry="2" />
+<text  x="1086.52" y="79.5" ></text>
+</g>
+<g >
+<title>add (2,437,152,768 total_ops, 0.87%)</title><rect x="16.5" y="117" width="10.3" height="15.0" fill="rgb(244,183,43)" rx="2" ry="2" />
+<text  x="19.51" y="127.5" ></text>
+</g>
+<g >
+<title>add (3,825,205,248 total_ops, 1.36%)</title><rect x="876.9" y="85" width="16.1" height="15.0" fill="rgb(244,183,43)" rx="2" ry="2" />
+<text  x="879.87" y="95.5" ></text>
+</g>
+<g >
+<title>compute_tf (132,120,576 total_ops, 0.05%)</title><rect x="1094.1" y="69" width="0.5" height="15.0" fill="rgb(249,206,49)" rx="2" ry="2" />
+<text  x="1097.08" y="79.5" ></text>
+</g>
+<g >
+<title>ntt_common (4,552,261,632 total_ops, 1.62%)</title><rect x="441.5" y="69" width="19.1" height="15.0" fill="rgb(248,198,47)" rx="2" ry="2" />
+<text  x="444.51" y="79.5" ></text>
+</g>
+<g >
+<title>ntt (1,415,577,600 total_ops, 0.50%)</title><rect x="323.7" y="85" width="5.9" height="15.0" fill="rgb(254,226,54)" rx="2" ry="2" />
+<text  x="326.66" y="95.5" ></text>
+</g>
+<g >
+<title>ntt_common (721,944,576 total_ops, 0.26%)</title><rect x="1063.6" y="101" width="3.1" height="15.0" fill="rgb(248,198,47)" rx="2" ry="2" />
+<text  x="1066.63" y="111.5" ></text>
+</g>
+<g >
+<title>basis_convert (2,780,299,264 total_ops, 0.99%)</title><rect x="464.9" y="85" width="11.7" height="15.0" fill="rgb(208,15,3)" rx="2" ry="2" />
+<text  x="467.95" y="95.5" ></text>
+</g>
+<g >
+<title>compute_tf (26,738,688 total_ops, 0.01%)</title><rect x="709.0" y="85" width="0.1" height="15.0" fill="rgb(249,206,49)" rx="2" ry="2" />
+<text  x="712.02" y="95.5" ></text>
+</g>
+<g >
+<title>ntt_common (233,963,520 total_ops, 0.08%)</title><rect x="15.5" y="53" width="1.0" height="15.0" fill="rgb(248,198,47)" rx="2" ry="2" />
+<text  x="18.53" y="63.5" ></text>
+</g>
+<g >
+<title>partial_multiply_inner (66,060,288 total_ops, 0.02%)</title><rect x="408.3" y="101" width="0.3" height="15.0" fill="rgb(221,75,17)" rx="2" ry="2" />
+<text  x="411.30" y="111.5" ></text>
+</g>
+<g >
+<title>basis_convert (957,349,888 total_ops, 0.34%)</title><rect x="391.9" y="69" width="4.0" height="15.0" fill="rgb(208,15,3)" rx="2" ry="2" />
+<text  x="394.92" y="79.5" ></text>
+</g>
+<g >
+<title>basis_convert (1,347,158,016 total_ops, 0.48%)</title><rect x="374.3" y="69" width="5.6" height="15.0" fill="rgb(208,15,3)" rx="2" ry="2" />
+<text  x="377.26" y="79.5" ></text>
+</g>
+<g >
+<title>mult (44,040,192 total_ops, 0.02%)</title><rect x="391.7" y="69" width="0.2" height="15.0" fill="rgb(206,7,1)" rx="2" ry="2" />
+<text  x="394.74" y="79.5" ></text>
+</g>
+<g >
+<title>mult (54,001,664 total_ops, 0.02%)</title><rect x="329.9" y="85" width="0.3" height="15.0" fill="rgb(206,7,1)" rx="2" ry="2" />
+<text  x="332.95" y="95.5" ></text>
+</g>
+<g >
+<title>mod_down_divide (108,003,328 total_ops, 0.04%)</title><rect x="308.1" y="85" width="0.5" height="15.0" fill="rgb(213,38,9)" rx="2" ry="2" />
+<text  x="311.15" y="95.5" ></text>
+</g>
+<g >
+<title>mod_raise (2,989,228,032 total_ops, 1.06%)</title><rect x="334.2" y="85" width="12.5" height="15.0" fill="rgb(246,188,45)" rx="2" ry="2" />
+<text  x="337.17" y="95.5" ></text>
+</g>
+<g >
+<title>ntt_common (1,885,077,504 total_ops, 0.67%)</title><rect x="551.9" y="37" width="7.9" height="15.0" fill="rgb(248,198,47)" rx="2" ry="2" />
+<text  x="554.87" y="47.5" ></text>
+</g>
+<g >
+<title>intt (622,854,144 total_ops, 0.22%)</title><rect x="698.9" y="85" width="2.7" height="15.0" fill="rgb(225,96,23)" rx="2" ry="2" />
+<text  x="701.94" y="95.5" ></text>
+</g>
+<g >
+<title>ntt_common (2,767,454,208 total_ops, 0.99%)</title><rect x="89.3" y="37" width="11.6" height="15.0" fill="rgb(248,198,47)" rx="2" ry="2" />
+<text  x="92.32" y="47.5" ></text>
+</g>
+<g >
+<title>ntt_common (601,620,480 total_ops, 0.21%)</title><rect x="1034.1" y="85" width="2.5" height="15.0" fill="rgb(248,198,47)" rx="2" ry="2" />
+<text  x="1037.06" y="95.5" ></text>
+</g>
+<g >
+<title>mod_reduce_rescale (955,777,024 total_ops, 0.34%)</title><rect x="356.5" y="101" width="4.1" height="15.0" fill="rgb(238,153,36)" rx="2" ry="2" />
+<text  x="359.53" y="111.5" ></text>
+</g>
+<g >
+<title>mod_down_reduce (2,599,419,904 total_ops, 0.93%)</title><rect x="391.9" y="85" width="10.9" height="15.0" fill="rgb(244,179,42)" rx="2" ry="2" />
+<text  x="394.92" y="95.5" ></text>
+</g>
+<g >
+<title>ntt_common (441,188,352 total_ops, 0.16%)</title><rect x="339.1" y="53" width="1.8" height="15.0" fill="rgb(248,198,47)" rx="2" ry="2" />
+<text  x="342.08" y="63.5" ></text>
+</g>
+<g >
+<title>ntt_common (280,756,224 total_ops, 0.10%)</title><rect x="1026.7" y="101" width="1.2" height="15.0" fill="rgb(248,198,47)" rx="2" ry="2" />
+<text  x="1029.70" y="111.5" ></text>
+</g>
+<g >
+<title>fft (63,761,547,264 total_ops, 22.71%)</title><rect x="16.5" y="149" width="268.0" height="15.0" fill="rgb(246,190,45)" rx="2" ry="2" />
+<text  x="19.51" y="159.5" >fft</text>
+</g>
+<g >
+<title>ntt (1,507,590,144 total_ops, 0.54%)</title><rect x="409.7" y="117" width="6.4" height="15.0" fill="rgb(254,226,54)" rx="2" ry="2" />
+<text  x="412.72" y="127.5" ></text>
+</g>
+<g >
+<title>multiply_plain (136,839,168 total_ops, 0.05%)</title><rect x="347.1" y="85" width="0.6" height="15.0" fill="rgb(225,92,22)" rx="2" ry="2" />
+<text  x="350.12" y="95.5" ></text>
+</g>
+<g >
+<title>mod_raise (4,440,195,072 total_ops, 1.58%)</title><rect x="674.4" y="101" width="18.7" height="15.0" fill="rgb(246,188,45)" rx="2" ry="2" />
+<text  x="677.41" y="111.5" ></text>
+</g>
+<g >
+<title>mod_raise (2,765,094,912 total_ops, 0.98%)</title><rect x="26.9" y="101" width="11.6" height="15.0" fill="rgb(246,188,45)" rx="2" ry="2" />
+<text  x="29.88" y="111.5" ></text>
+</g>
+<g >
+<title>basis_convert (1,424,490,496 total_ops, 0.51%)</title><rect x="308.6" y="69" width="6.0" height="15.0" fill="rgb(208,15,3)" rx="2" ry="2" />
+<text  x="311.60" y="79.5" ></text>
+</g>
+<g >
+<title>mod_reduce_rescale (863,502,336 total_ops, 0.31%)</title><rect x="1063.0" y="133" width="3.7" height="15.0" fill="rgb(238,153,36)" rx="2" ry="2" />
+<text  x="1066.04" y="143.5" ></text>
+</g>
+<g >
+<title>add (115,343,360 total_ops, 0.04%)</title><rect x="464.0" y="85" width="0.5" height="15.0" fill="rgb(244,183,43)" rx="2" ry="2" />
+<text  x="466.98" y="95.5" ></text>
+</g>
+<g >
+<title>compute_phi (54,001,664 total_ops, 0.02%)</title><rect x="316.9" y="53" width="0.2" height="15.0" fill="rgb(234,135,32)" rx="2" ry="2" />
+<text  x="319.91" y="63.5" ></text>
+</g>
+<g >
+<title>compute_tf (29,884,416 total_ops, 0.01%)</title><rect x="433.8" y="69" width="0.2" height="15.0" fill="rgb(249,206,49)" rx="2" ry="2" />
+<text  x="436.85" y="79.5" ></text>
+</g>
+<g >
+<title>ntt_common (815,529,984 total_ops, 0.29%)</title><rect x="357.1" y="69" width="3.5" height="15.0" fill="rgb(248,198,47)" rx="2" ry="2" />
+<text  x="360.12" y="79.5" ></text>
+</g>
+<g >
+<title>ntt_common (18,529,910,784 total_ops, 6.60%)</title><rect x="799.0" y="69" width="77.9" height="15.0" fill="rgb(248,198,47)" rx="2" ry="2" />
+<text  x="801.99" y="79.5" >ntt_common</text>
+</g>
+<g >
+<title>add (121,634,816 total_ops, 0.04%)</title><rect x="390.3" y="85" width="0.5" height="15.0" fill="rgb(244,183,43)" rx="2" ry="2" />
+<text  x="393.27" y="95.5" ></text>
+</g>
+<g >
+<title>ntt_common (581,566,464 total_ops, 0.21%)</title><rect x="380.1" y="53" width="2.4" height="15.0" fill="rgb(248,198,47)" rx="2" ry="2" />
+<text  x="383.06" y="63.5" ></text>
+</g>
+<g >
+<title>compute_tf (363,331,584 total_ops, 0.13%)</title><rect x="797.5" y="69" width="1.5" height="15.0" fill="rgb(249,206,49)" rx="2" ry="2" />
+<text  x="800.46" y="79.5" ></text>
+</g>
+<g >
+<title>ntt_common (4,492,099,584 total_ops, 1.60%)</title><rect x="652.0" y="53" width="18.8" height="15.0" fill="rgb(248,198,47)" rx="2" ry="2" />
+<text  x="654.96" y="63.5" ></text>
+</g>
+<g >
+<title>compute_phi (55,050,240 total_ops, 0.02%)</title><rect x="602.2" y="37" width="0.3" height="15.0" fill="rgb(234,135,32)" rx="2" ry="2" />
+<text  x="605.24" y="47.5" ></text>
+</g>
+<g >
+<title>fft (38,784,466,944 total_ops, 13.82%)</title><rect x="510.9" y="149" width="163.0" height="15.0" fill="rgb(246,190,45)" rx="2" ry="2" />
+<text  x="513.90" y="159.5" >fft</text>
+</g>
+<g >
+<title>slot_to_coeff (38,791,282,688 total_ops, 13.82%)</title><rect x="510.9" y="165" width="163.0" height="15.0" fill="rgb(235,142,34)" rx="2" ry="2" />
+<text  x="513.87" y="175.5" >slot_to_coeff</text>
+</g>
+<g >
+<title>ntt_common (1,109,655,552 total_ops, 0.40%)</title><rect x="476.9" y="69" width="4.7" height="15.0" fill="rgb(248,198,47)" rx="2" ry="2" />
+<text  x="479.91" y="79.5" ></text>
+</g>
+<g >
+<title>add (377,487,360 total_ops, 0.13%)</title><rect x="1044.6" y="101" width="1.6" height="15.0" fill="rgb(244,183,43)" rx="2" ry="2" />
+<text  x="1047.62" y="111.5" ></text>
+</g>
+<g >
+<title>mod_down_reduce (24,807,211,008 total_ops, 8.84%)</title><rect x="920.6" y="101" width="104.3" height="15.0" fill="rgb(244,179,42)" rx="2" ry="2" />
+<text  x="923.61" y="111.5" >mod_down_red..</text>
+</g>
+<g >
+<title>add (148,897,792 total_ops, 0.05%)</title><rect x="306.6" y="69" width="0.6" height="15.0" fill="rgb(244,183,43)" rx="2" ry="2" />
+<text  x="309.58" y="79.5" ></text>
+</g>
+<g >
+<title>key_switch_hoisting (20,304,101,376 total_ops, 7.23%)</title><rect x="52.7" y="85" width="85.4" height="15.0" fill="rgb(246,191,45)" rx="2" ry="2" />
+<text  x="55.73" y="95.5" >key_switch..</text>
+</g>
+<g >
+<title>add (212,336,640 total_ops, 0.08%)</title><rect x="144.2" y="53" width="0.9" height="15.0" fill="rgb(244,183,43)" rx="2" ry="2" />
+<text  x="147.18" y="63.5" ></text>
+</g>
+<g >
+<title>ntt_common (120,324,096 total_ops, 0.04%)</title><rect x="11.6" y="53" width="0.5" height="15.0" fill="rgb(248,198,47)" rx="2" ry="2" />
+<text  x="14.61" y="63.5" ></text>
+</g>
+<g >
+<title>conj_and_add (1,549,402,112 total_ops, 0.55%)</title><rect x="10.0" y="149" width="6.5" height="15.0" fill="rgb(232,126,30)" rx="2" ry="2" />
+<text  x="13.00" y="159.5" ></text>
+</g>
+<g >
+<title>mod_down_reduce (3,036,676,096 total_ops, 1.08%)</title><rect x="695.2" y="101" width="12.8" height="15.0" fill="rgb(244,179,42)" rx="2" ry="2" />
+<text  x="698.22" y="111.5" ></text>
+</g>
+<g >
+<title>add (188,743,680 total_ops, 0.07%)</title><rect x="1029.6" y="117" width="0.8" height="15.0" fill="rgb(244,183,43)" rx="2" ry="2" />
+<text  x="1032.58" y="127.5" ></text>
+</g>
+<g >
+<title>compute_phi (216,006,656 total_ops, 0.08%)</title><rect x="952.5" y="69" width="0.9" height="15.0" fill="rgb(234,135,32)" rx="2" ry="2" />
+<text  x="955.53" y="79.5" ></text>
+</g>
+<g >
+<title>key_switch_inner_product (228,065,280 total_ops, 0.08%)</title><rect x="346.7" y="101" width="1.0" height="15.0" fill="rgb(240,163,39)" rx="2" ry="2" />
+<text  x="349.74" y="111.5" ></text>
+</g>
+<g >
+<title>compute_tf (33,947,648 total_ops, 0.01%)</title><rect x="643.4" y="53" width="0.2" height="15.0" fill="rgb(249,206,49)" rx="2" ry="2" />
+<text  x="646.43" y="63.5" ></text>
+</g>
+<g >
+<title>decompose (176,160,768 total_ops, 0.06%)</title><rect x="1067.4" y="101" width="0.7" height="15.0" fill="rgb(218,62,14)" rx="2" ry="2" />
+<text  x="1070.37" y="111.5" ></text>
+</g>
+<g >
+<title>multiply_plain (119,537,664 total_ops, 0.04%)</title><rect x="1189.5" y="133" width="0.5" height="15.0" fill="rgb(225,92,22)" rx="2" ry="2" />
+<text  x="1192.50" y="143.5" ></text>
+</g>
+<g >
+<title>compute_tf (36,962,304 total_ops, 0.01%)</title><rect x="551.7" y="37" width="0.2" height="15.0" fill="rgb(249,206,49)" rx="2" ry="2" />
+<text  x="554.71" y="47.5" ></text>
+</g>
+<g >
+<title>compute_tf (41,680,896 total_ops, 0.01%)</title><rect x="297.5" y="53" width="0.2" height="15.0" fill="rgb(249,206,49)" rx="2" ry="2" />
+<text  x="300.47" y="63.5" ></text>
+</g>
+<g >
+<title>mod_down_divide (88,080,384 total_ops, 0.03%)</title><rect x="391.6" y="85" width="0.3" height="15.0" fill="rgb(213,38,9)" rx="2" ry="2" />
+<text  x="394.55" y="95.5" ></text>
+</g>
+<g >
+<title>add (115,343,360 total_ops, 0.04%)</title><rect x="416.1" y="101" width="0.4" height="15.0" fill="rgb(244,183,43)" rx="2" ry="2" />
+<text  x="419.06" y="111.5" ></text>
+</g>
+<g >
+<title>compute_tf (33,554,432 total_ops, 0.01%)</title><rect x="363.9" y="101" width="0.2" height="15.0" fill="rgb(249,206,49)" rx="2" ry="2" />
+<text  x="366.95" y="111.5" ></text>
+</g>
+<g >
+<title>mult (2,437,152,768 total_ops, 0.87%)</title><rect x="42.0" y="101" width="10.3" height="15.0" fill="rgb(206,7,1)" rx="2" ry="2" />
+<text  x="45.04" y="111.5" ></text>
+</g>
+<g >
+<title>add_plain (69,206,016 total_ops, 0.02%)</title><rect x="362.6" y="133" width="0.3" height="15.0" fill="rgb(244,182,43)" rx="2" ry="2" />
+<text  x="365.57" y="143.5" ></text>
+</g>
+<g >
+<title>ntt_common (320,864,256 total_ops, 0.11%)</title><rect x="351.4" y="53" width="1.4" height="15.0" fill="rgb(248,198,47)" rx="2" ry="2" />
+<text  x="354.44" y="63.5" ></text>
+</g>
+<g >
+<title>mod_down_divide (333,447,168 total_ops, 0.12%)</title><rect x="1127.9" y="101" width="1.4" height="15.0" fill="rgb(213,38,9)" rx="2" ry="2" />
+<text  x="1130.89" y="111.5" ></text>
+</g>
+<g >
+<title>add (1,641,283,584 total_ops, 0.58%)</title><rect x="510.9" y="117" width="6.9" height="15.0" fill="rgb(244,183,43)" rx="2" ry="2" />
+<text  x="513.90" y="127.5" ></text>
+</g>
+<g >
+<title>add (254,803,968 total_ops, 0.09%)</title><rect x="1029.3" y="133" width="1.1" height="15.0" fill="rgb(244,183,43)" rx="2" ry="2" />
+<text  x="1032.30" y="143.5" ></text>
+</g>
+<g >
+<title>compute_tf (28,311,552 total_ops, 0.01%)</title><rect x="701.8" y="69" width="0.1" height="15.0" fill="rgb(249,206,49)" rx="2" ry="2" />
+<text  x="704.80" y="79.5" ></text>
+</g>
+<g >
+<title>mod_down_reduce (7,069,499,392 total_ops, 2.52%)</title><rect x="464.9" y="101" width="29.8" height="15.0" fill="rgb(244,179,42)" rx="2" ry="2" />
+<text  x="467.95" y="111.5" >mo..</text>
+</g>
+<g >
+<title>add (42,467,328 total_ops, 0.02%)</title><rect x="373.7" y="117" width="0.2" height="15.0" fill="rgb(244,183,43)" rx="2" ry="2" />
+<text  x="376.70" y="127.5" ></text>
+</g>
+<g >
+<title>ntt (509,607,936 total_ops, 0.18%)</title><rect x="525.1" y="101" width="2.1" height="15.0" fill="rgb(254,226,54)" rx="2" ry="2" />
+<text  x="528.06" y="111.5" ></text>
+</g>
+<g >
+<title>add (3,825,205,248 total_ops, 1.36%)</title><rect x="876.9" y="101" width="16.1" height="15.0" fill="rgb(244,183,43)" rx="2" ry="2" />
+<text  x="879.87" y="111.5" ></text>
+</g>
+<g >
+<title>ntt (764,411,904 total_ops, 0.27%)</title><rect x="38.8" y="101" width="3.2" height="15.0" fill="rgb(254,226,54)" rx="2" ry="2" />
+<text  x="41.83" y="111.5" ></text>
+</g>
+<g >
+<title>compute_phi (178,520,064 total_ops, 0.06%)</title><rect x="440.4" y="69" width="0.7" height="15.0" fill="rgb(234,135,32)" rx="2" ry="2" />
+<text  x="443.38" y="79.5" ></text>
+</g>
+<g >
+<title>mod_down (10,394,533,888 total_ops, 3.70%)</title><rect x="627.2" y="101" width="43.6" height="15.0" fill="rgb(240,162,38)" rx="2" ry="2" />
+<text  x="630.15" y="111.5" >mod_..</text>
+</g>
+<g >
+<title>rotate_sum (6,986,137,600 total_ops, 2.49%)</title><rect x="1029.3" y="149" width="29.4" height="15.0" fill="rgb(215,49,11)" rx="2" ry="2" />
+<text  x="1032.30" y="159.5" >ro..</text>
+</g>
+<g >
+<title>key_switch (35,964,321,792 total_ops, 12.81%)</title><rect x="52.3" y="101" width="151.2" height="15.0" fill="rgb(223,87,20)" rx="2" ry="2" />
+<text  x="55.29" y="111.5" >key_switch</text>
+</g>
+<g >
+<title>add (106,168,320 total_ops, 0.04%)</title><rect x="52.3" y="85" width="0.4" height="15.0" fill="rgb(244,183,43)" rx="2" ry="2" />
+<text  x="55.29" y="95.5" ></text>
+</g>
+<g >
+<title>compute_phi (264,241,152 total_ops, 0.09%)</title><rect x="1093.0" y="69" width="1.1" height="15.0" fill="rgb(234,135,32)" rx="2" ry="2" />
+<text  x="1095.97" y="79.5" ></text>
+</g>
+<g >
+<title>mod_raise (854,065,152 total_ops, 0.30%)</title><rect x="10.1" y="85" width="3.6" height="15.0" fill="rgb(246,188,45)" rx="2" ry="2" />
+<text  x="13.14" y="95.5" ></text>
+</g>
+<g >
+<title>intt (254,803,968 total_ops, 0.09%)</title><rect x="1168.1" y="101" width="1.1" height="15.0" fill="rgb(225,96,23)" rx="2" ry="2" />
+<text  x="1171.12" y="111.5" ></text>
+</g>
+<g >
+<title>bootstrap_regression (280,739,577,856 total_ops, 100.00%)</title><rect x="10.0" y="197" width="1180.0" height="15.0" fill="rgb(219,67,16)" rx="2" ry="2" />
+<text  x="13.00" y="207.5" >bootstrap_regression</text>
+</g>
+<g >
+<title>compute_tf (25,559,040 total_ops, 0.01%)</title><rect x="341.2" y="53" width="0.1" height="15.0" fill="rgb(249,206,49)" rx="2" ry="2" />
+<text  x="344.15" y="63.5" ></text>
+</g>
+<g >
+<title>double_multiply (6,441,664,512 total_ops, 2.29%)</title><rect x="333.8" y="133" width="27.0" height="15.0" fill="rgb(209,21,5)" rx="2" ry="2" />
+<text  x="336.75" y="143.5" >d..</text>
+</g>
+<g >
+<title>mod_down_divide (113,246,208 total_ops, 0.04%)</title><rect x="694.7" y="101" width="0.5" height="15.0" fill="rgb(213,38,9)" rx="2" ry="2" />
+<text  x="697.75" y="111.5" ></text>
+</g>
+<g >
+<title>ntt_common (260,702,208 total_ops, 0.09%)</title><rect x="520.2" y="69" width="1.1" height="15.0" fill="rgb(248,198,47)" rx="2" ry="2" />
+<text  x="523.23" y="79.5" ></text>
+</g>
+<g >
+<title>ntt (4,501,536,768 total_ops, 1.60%)</title><rect x="1147.9" y="85" width="18.9" height="15.0" fill="rgb(254,226,54)" rx="2" ry="2" />
+<text  x="1150.88" y="95.5" ></text>
+</g>
+<g >
+<title>ntt_common (80,216,064 total_ops, 0.03%)</title><rect x="708.5" y="85" width="0.3" height="15.0" fill="rgb(248,198,47)" rx="2" ry="2" />
+<text  x="711.46" y="95.5" ></text>
+</g>
+<g >
+<title>basis_convert (344,457,216 total_ops, 0.12%)</title><rect x="10.1" y="69" width="1.5" height="15.0" fill="rgb(208,15,3)" rx="2" ry="2" />
+<text  x="13.14" y="79.5" ></text>
+</g>
+<g >
+<title>compute_tf (106,168,320 total_ops, 0.04%)</title><rect x="180.2" y="37" width="0.5" height="15.0" fill="rgb(249,206,49)" rx="2" ry="2" />
+<text  x="183.25" y="47.5" ></text>
+</g>
+<g >
+<title>compute_phi (25,165,824 total_ops, 0.01%)</title><rect x="1060.2" y="101" width="0.1" height="15.0" fill="rgb(234,135,32)" rx="2" ry="2" />
+<text  x="1063.18" y="111.5" ></text>
+</g>
+<g >
+<title>basis_convert (884,998,144 total_ops, 0.32%)</title><rect x="695.2" y="85" width="3.7" height="15.0" fill="rgb(208,15,3)" rx="2" ry="2" />
+<text  x="698.22" y="95.5" ></text>
+</g>
+<g >
+<title>ntt (4,246,732,800 total_ops, 1.51%)</title><rect x="1169.2" y="101" width="17.8" height="15.0" fill="rgb(254,226,54)" rx="2" ry="2" />
+<text  x="1172.20" y="111.5" ></text>
+</g>
+<g >
+<title>mod_raise (3,342,336,000 total_ops, 1.19%)</title><rect x="1030.6" y="117" width="14.0" height="15.0" fill="rgb(246,188,45)" rx="2" ry="2" />
+<text  x="1033.57" y="127.5" ></text>
+</g>
+<g >
+<title>ntt_common (2,941,255,680 total_ops, 1.05%)</title><rect x="482.3" y="69" width="12.4" height="15.0" fill="rgb(248,198,47)" rx="2" ry="2" />
+<text  x="485.30" y="79.5" ></text>
+</g>
+<g >
+<title>compute_phi (52,428,800 total_ops, 0.02%)</title><rect x="323.7" y="69" width="0.2" height="15.0" fill="rgb(234,135,32)" rx="2" ry="2" />
+<text  x="326.66" y="79.5" ></text>
+</g>
+<g >
+<title>add (53,739,520 total_ops, 0.02%)</title><rect x="329.7" y="85" width="0.2" height="15.0" fill="rgb(244,183,43)" rx="2" ry="2" />
+<text  x="332.72" y="95.5" ></text>
+</g>
+<g >
+<title>mod_reduce_rescale (568,590,336 total_ops, 0.20%)</title><rect x="524.8" y="117" width="2.4" height="15.0" fill="rgb(238,153,36)" rx="2" ry="2" />
+<text  x="527.81" y="127.5" ></text>
+</g>
+<g >
+<title>ntt_common (381,026,304 total_ops, 0.14%)</title><rect x="31.8" y="69" width="1.6" height="15.0" fill="rgb(248,198,47)" rx="2" ry="2" />
+<text  x="34.82" y="79.5" ></text>
+</g>
+<g >
+<title>decompose (47,185,920 total_ops, 0.02%)</title><rect x="1030.4" y="117" width="0.2" height="15.0" fill="rgb(218,62,14)" rx="2" ry="2" />
+<text  x="1033.37" y="127.5" ></text>
+</g>
+<g >
+<title>mod_down (3,542,614,016 total_ops, 1.26%)</title><rect x="308.1" y="101" width="14.9" height="15.0" fill="rgb(240,162,38)" rx="2" ry="2" />
+<text  x="311.15" y="111.5" ></text>
+</g>
+<g >
+<title>mod_down_reduce (2,036,858,880 total_ops, 0.73%)</title><rect x="348.0" y="85" width="8.5" height="15.0" fill="rgb(244,179,42)" rx="2" ry="2" />
+<text  x="350.97" y="95.5" ></text>
+</g>
+<g >
+<title>key_switch_hoisting (35,726,032,896 total_ops, 12.73%)</title><rect x="726.7" y="117" width="150.2" height="15.0" fill="rgb(246,191,45)" rx="2" ry="2" />
+<text  x="729.71" y="127.5" >key_switch_hoisting</text>
+</g>
+<g >
+<title>compute_phi (28,311,552 total_ops, 0.01%)</title><rect x="1063.5" y="101" width="0.1" height="15.0" fill="rgb(234,135,32)" rx="2" ry="2" />
+<text  x="1066.45" y="111.5" ></text>
+</g>
+<g >
+<title>compute_tf (48,103,424 total_ops, 0.02%)</title><rect x="239.9" y="53" width="0.2" height="15.0" fill="rgb(249,206,49)" rx="2" ry="2" />
+<text  x="242.86" y="63.5" ></text>
+</g>
+<g >
+<title>mod_raise (1,646,788,608 total_ops, 0.59%)</title><rect x="517.9" y="101" width="6.9" height="15.0" fill="rgb(246,188,45)" rx="2" ry="2" />
+<text  x="520.89" y="111.5" ></text>
+</g>
+<g >
+<title>add (56,623,104 total_ops, 0.02%)</title><rect x="694.7" y="85" width="0.3" height="15.0" fill="rgb(244,183,43)" rx="2" ry="2" />
+<text  x="697.75" y="95.5" ></text>
+</g>
+<g >
+<title>intt (806,879,232 total_ops, 0.29%)</title><rect x="679.5" y="85" width="3.4" height="15.0" fill="rgb(225,96,23)" rx="2" ry="2" />
+<text  x="682.51" y="95.5" ></text>
+</g>
+<g >
+<title>key_switch_hoisting (5,100,797,952 total_ops, 1.82%)</title><rect x="285.1" y="101" width="21.5" height="15.0" fill="rgb(246,191,45)" rx="2" ry="2" />
+<text  x="288.15" y="111.5" >k..</text>
+</g>
+<g >
+<title>ntt_common (40,108,032 total_ops, 0.01%)</title><rect x="1063.3" y="101" width="0.2" height="15.0" fill="rgb(248,198,47)" rx="2" ry="2" />
+<text  x="1066.29" y="111.5" ></text>
+</g>
+<g >
+<title>compute_tf (26,214,400 total_ops, 0.01%)</title><rect x="323.9" y="69" width="0.1" height="15.0" fill="rgb(249,206,49)" rx="2" ry="2" />
+<text  x="326.88" y="79.5" ></text>
+</g>
+<g >
+<title>decompose (59,768,832 total_ops, 0.02%)</title><rect x="674.2" y="101" width="0.2" height="15.0" fill="rgb(218,62,14)" rx="2" ry="2" />
+<text  x="677.16" y="111.5" ></text>
+</g>
+<g >
+<title>ntt (6,030,360,576 total_ops, 2.15%)</title><rect x="559.8" y="53" width="25.3" height="15.0" fill="rgb(254,226,54)" rx="2" ry="2" />
+<text  x="562.79" y="63.5" >ntt</text>
+</g>
+<g >
+<title>mult (56,623,104 total_ops, 0.02%)</title><rect x="715.7" y="117" width="0.2" height="15.0" fill="rgb(206,7,1)" rx="2" ry="2" />
+<text  x="718.70" y="127.5" ></text>
+</g>
+<g >
+<title>mod_raise (11,923,881,984 total_ops, 4.25%)</title><rect x="535.0" y="69" width="50.1" height="15.0" fill="rgb(246,188,45)" rx="2" ry="2" />
+<text  x="538.02" y="79.5" >mod_r..</text>
+</g>
+<g >
+<title>ntt_common (1,423,835,136 total_ops, 0.51%)</title><rect x="410.1" y="101" width="6.0" height="15.0" fill="rgb(248,198,47)" rx="2" ry="2" />
+<text  x="413.07" y="111.5" ></text>
+</g>
+<g >
+<title>add (25,165,824 total_ops, 0.01%)</title><rect x="13.7" y="85" width="0.1" height="15.0" fill="rgb(244,183,43)" rx="2" ry="2" />
+<text  x="16.73" y="95.5" ></text>
+</g>
+<g >
+<title>add (115,343,360 total_ops, 0.04%)</title><rect x="416.1" y="117" width="0.4" height="15.0" fill="rgb(244,183,43)" rx="2" ry="2" />
+<text  x="419.06" y="127.5" ></text>
+</g>
+<g >
+<title>ntt_common (5,695,340,544 total_ops, 2.03%)</title><rect x="561.2" y="37" width="23.9" height="15.0" fill="rgb(248,198,47)" rx="2" ry="2" />
+<text  x="564.20" y="47.5" >n..</text>
+</g>
+<g >
+<title>add (580,911,104 total_ops, 0.21%)</title><rect x="138.1" y="69" width="2.4" height="15.0" fill="rgb(244,183,43)" rx="2" ry="2" />
+<text  x="141.08" y="79.5" ></text>
+</g>
+<g >
+<title>ntt_common (721,944,576 total_ops, 0.26%)</title><rect x="39.0" y="85" width="3.0" height="15.0" fill="rgb(248,198,47)" rx="2" ry="2" />
+<text  x="42.01" y="95.5" ></text>
+</g>
+<g >
+<title>compute_phi (83,361,792 total_ops, 0.03%)</title><rect x="297.1" y="53" width="0.4" height="15.0" fill="rgb(234,135,32)" rx="2" ry="2" />
+<text  x="300.12" y="63.5" ></text>
+</g>
+<g >
+<title>mod_down_divide (352,321,536 total_ops, 0.13%)</title><rect x="627.2" y="85" width="1.4" height="15.0" fill="rgb(213,38,9)" rx="2" ry="2" />
+<text  x="630.15" y="95.5" ></text>
+</g>
+<g >
+<title>add (1,641,283,584 total_ops, 0.58%)</title><rect x="510.9" y="101" width="6.9" height="15.0" fill="rgb(244,183,43)" rx="2" ry="2" />
+<text  x="513.90" y="111.5" ></text>
+</g>
+<g >
+<title>ntt_common (1,363,673,088 total_ops, 0.49%)</title><rect x="709.1" y="85" width="5.8" height="15.0" fill="rgb(248,198,47)" rx="2" ry="2" />
+<text  x="712.13" y="95.5" ></text>
+</g>
+<g >
+<title>partial_multiply_inner (107,741,184 total_ops, 0.04%)</title><rect x="329.7" y="101" width="0.5" height="15.0" fill="rgb(221,75,17)" rx="2" ry="2" />
+<text  x="332.72" y="111.5" ></text>
+</g>
+<g >
+<title>add (42,467,328 total_ops, 0.02%)</title><rect x="373.7" y="101" width="0.2" height="15.0" fill="rgb(244,183,43)" rx="2" ry="2" />
+<text  x="376.70" y="111.5" ></text>
+</g>
+<g >
+<title>ntt (2,420,637,696 total_ops, 0.86%)</title><rect x="682.9" y="85" width="10.2" height="15.0" fill="rgb(254,226,54)" rx="2" ry="2" />
+<text  x="685.90" y="95.5" ></text>
+</g>
+<g >
+<title>compute_tf (35,389,440 total_ops, 0.01%)</title><rect x="1036.9" y="85" width="0.1" height="15.0" fill="rgb(249,206,49)" rx="2" ry="2" />
+<text  x="1039.89" y="95.5" ></text>
+</g>
+<g >
+<title>compute_phi (28,311,552 total_ops, 0.01%)</title><rect x="293.9" y="53" width="0.1" height="15.0" fill="rgb(234,135,32)" rx="2" ry="2" />
+<text  x="296.91" y="63.5" ></text>
+</g>
+<g >
+<title>multiply_plain (1,641,283,584 total_ops, 0.58%)</title><rect x="527.2" y="117" width="6.9" height="15.0" fill="rgb(225,92,22)" rx="2" ry="2" />
+<text  x="530.20" y="127.5" ></text>
+</g>
+<g >
+<title>basis_convert (2,582,642,688 total_ops, 0.92%)</title><rect x="1129.3" y="85" width="10.8" height="15.0" fill="rgb(208,15,3)" rx="2" ry="2" />
+<text  x="1132.29" y="95.5" ></text>
+</g>
+<g >
+<title>inner_product (83,715,686,400 total_ops, 29.82%)</title><rect x="673.9" y="149" width="351.9" height="15.0" fill="rgb(243,178,42)" rx="2" ry="2" />
+<text  x="676.92" y="159.5" >inner_product</text>
+</g>
+<g >
+<title>key_switch (1,531,052,032 total_ops, 0.55%)</title><rect x="10.1" y="117" width="6.4" height="15.0" fill="rgb(223,87,20)" rx="2" ry="2" />
+<text  x="13.08" y="127.5" ></text>
+</g>
+<g >
+<title>ntt_common (1,123,024,896 total_ops, 0.40%)</title><rect x="398.1" y="53" width="4.7" height="15.0" fill="rgb(248,198,47)" rx="2" ry="2" />
+<text  x="401.13" y="63.5" ></text>
+</g>
+<g >
+<title>add (396,361,728 total_ops, 0.14%)</title><rect x="585.1" y="69" width="1.7" height="15.0" fill="rgb(244,183,43)" rx="2" ry="2" />
+<text  x="588.14" y="79.5" ></text>
+</g>
+<g >
+<title>compute_tf (108,003,328 total_ops, 0.04%)</title><rect x="953.4" y="69" width="0.5" height="15.0" fill="rgb(249,206,49)" rx="2" ry="2" />
+<text  x="956.44" y="79.5" ></text>
+</g>
+<g >
+<title>ntt_common (360,972,288 total_ops, 0.13%)</title><rect x="12.2" y="53" width="1.5" height="15.0" fill="rgb(248,198,47)" rx="2" ry="2" />
+<text  x="15.21" y="63.5" ></text>
+</g>
+<g >
+<title>add (377,487,360 total_ops, 0.13%)</title><rect x="1044.6" y="117" width="1.6" height="15.0" fill="rgb(244,183,43)" rx="2" ry="2" />
+<text  x="1047.62" y="127.5" ></text>
+</g>
+<g >
+<title>mult (54,001,664 total_ops, 0.02%)</title><rect x="333.5" y="117" width="0.2" height="15.0" fill="rgb(206,7,1)" rx="2" ry="2" />
+<text  x="336.46" y="127.5" ></text>
+</g>
+<g >
+<title>mod_down (2,687,500,288 total_ops, 0.96%)</title><rect x="391.6" y="101" width="11.2" height="15.0" fill="rgb(240,162,38)" rx="2" ry="2" />
+<text  x="394.55" y="111.5" ></text>
+</g>
+<g >
+<title>ntt_common (2,286,157,824 total_ops, 0.81%)</title><rect x="683.5" y="69" width="9.6" height="15.0" fill="rgb(248,198,47)" rx="2" ry="2" />
+<text  x="686.46" y="79.5" ></text>
+</g>
+<g >
+<title>key_switch_hoisting (2,794,979,328 total_ops, 1.00%)</title><rect x="26.8" y="117" width="11.7" height="15.0" fill="rgb(246,191,45)" rx="2" ry="2" />
+<text  x="29.76" y="127.5" ></text>
+</g>
+<g >
+<title>compute_phi (327,155,712 total_ops, 0.12%)</title><rect x="100.9" y="37" width="1.4" height="15.0" fill="rgb(234,135,32)" rx="2" ry="2" />
+<text  x="103.95" y="47.5" ></text>
+</g>
+<g >
+<title>ntt_common (427,819,008 total_ops, 0.15%)</title><rect x="396.1" y="53" width="1.8" height="15.0" fill="rgb(248,198,47)" rx="2" ry="2" />
+<text  x="399.05" y="63.5" ></text>
+</g>
+<g >
+<title>leaf_prods (3,040,870,400 total_ops, 1.08%)</title><rect x="360.8" y="149" width="12.8" height="15.0" fill="rgb(248,199,47)" rx="2" ry="2" />
+<text  x="363.83" y="159.5" ></text>
+</g>
+<g >
+<title>basis_convert (3,938,451,456 total_ops, 1.40%)</title><rect x="417.0" y="85" width="16.6" height="15.0" fill="rgb(208,15,3)" rx="2" ry="2" />
+<text  x="420.04" y="95.5" ></text>
+</g>
+<g >
+<title>compute_tf (44,826,624 total_ops, 0.02%)</title><rect x="683.3" y="69" width="0.2" height="15.0" fill="rgb(249,206,49)" rx="2" ry="2" />
+<text  x="686.28" y="79.5" ></text>
+</g>
+<g >
+<title>mult (33,030,144 total_ops, 0.01%)</title><rect x="347.8" y="69" width="0.2" height="15.0" fill="rgb(206,7,1)" rx="2" ry="2" />
+<text  x="350.83" y="79.5" ></text>
+</g>
+<g >
+<title>multiply_plain (115,343,360 total_ops, 0.04%)</title><rect x="510.4" y="133" width="0.5" height="15.0" fill="rgb(225,92,22)" rx="2" ry="2" />
+<text  x="513.39" y="143.5" ></text>
+</g>
+<g >
+<title>mod_down_reduce (2,287,992,832 total_ops, 0.81%)</title><rect x="1049.0" y="117" width="9.6" height="15.0" fill="rgb(244,179,42)" rx="2" ry="2" />
+<text  x="1051.96" y="127.5" ></text>
+</g>
+<g >
+<title>key_switch_hoisting (4,499,963,904 total_ops, 1.60%)</title><rect x="674.2" y="117" width="18.9" height="15.0" fill="rgb(246,191,45)" rx="2" ry="2" />
+<text  x="677.16" y="127.5" ></text>
+</g>
+<g >
+<title>decompose (34,603,008 total_ops, 0.01%)</title><rect x="334.0" y="85" width="0.2" height="15.0" fill="rgb(218,62,14)" rx="2" ry="2" />
+<text  x="337.03" y="95.5" ></text>
+</g>
+<g >
+<title>basis_convert (2,791,833,600 total_ops, 0.99%)</title><rect x="590.5" y="53" width="11.7" height="15.0" fill="rgb(208,15,3)" rx="2" ry="2" />
+<text  x="593.51" y="63.5" ></text>
+</g>
+<g >
+<title>compute_phi (726,663,168 total_ops, 0.26%)</title><rect x="794.4" y="69" width="3.1" height="15.0" fill="rgb(234,135,32)" rx="2" ry="2" />
+<text  x="797.41" y="79.5" ></text>
+</g>
+<g >
+<title>intt (1,486,356,480 total_ops, 0.53%)</title><rect x="602.2" y="53" width="6.3" height="15.0" fill="rgb(225,96,23)" rx="2" ry="2" />
+<text  x="605.24" y="63.5" ></text>
+</g>
+<g >
+<title>ntt_common (40,108,032 total_ops, 0.01%)</title><rect x="323.5" y="69" width="0.2" height="15.0" fill="rgb(248,198,47)" rx="2" ry="2" />
+<text  x="326.49" y="79.5" ></text>
+</g>
+<g >
+<title>mult (217,055,232 total_ops, 0.08%)</title><rect x="1024.9" y="117" width="0.9" height="15.0" fill="rgb(206,7,1)" rx="2" ry="2" />
+<text  x="1027.88" y="127.5" ></text>
+</g>
+<g >
+<title>decompose (147,849,216 total_ops, 0.05%)</title><rect x="534.4" y="69" width="0.6" height="15.0" fill="rgb(218,62,14)" rx="2" ry="2" />
+<text  x="537.40" y="79.5" ></text>
+</g>
+<g >
+<title>key_switch_hoisting (3,855,876,096 total_ops, 1.37%)</title><rect x="374.1" y="101" width="16.2" height="15.0" fill="rgb(246,191,45)" rx="2" ry="2" />
+<text  x="377.07" y="111.5" ></text>
+</g>
+<g >
+<title>compute_phi (53,477,376 total_ops, 0.02%)</title><rect x="708.8" y="85" width="0.2" height="15.0" fill="rgb(234,135,32)" rx="2" ry="2" />
+<text  x="711.79" y="95.5" ></text>
+</g>
+<g >
+<title>mult (1,071,906,816 total_ops, 0.38%)</title><rect x="280.0" y="85" width="4.5" height="15.0" fill="rgb(206,7,1)" rx="2" ry="2" />
+<text  x="283.01" y="95.5" ></text>
+</g>
+<g >
+<title>mult (115,343,360 total_ops, 0.04%)</title><rect x="509.9" y="101" width="0.5" height="15.0" fill="rgb(206,7,1)" rx="2" ry="2" />
+<text  x="512.90" y="111.5" ></text>
+</g>
+<g >
+<title>mult (5,737,807,872 total_ops, 2.04%)</title><rect x="893.0" y="85" width="24.1" height="15.0" fill="rgb(206,7,1)" rx="2" ry="2" />
+<text  x="895.95" y="95.5" >m..</text>
+</g>
+<g >
+<title>ntt_common (1,377,042,432 total_ops, 0.49%)</title><rect x="317.3" y="53" width="5.7" height="15.0" fill="rgb(248,198,47)" rx="2" ry="2" />
+<text  x="320.25" y="63.5" ></text>
+</g>
+<g >
+<title>decompose (217,055,232 total_ops, 0.08%)</title><rect x="52.7" y="69" width="0.9" height="15.0" fill="rgb(218,62,14)" rx="2" ry="2" />
+<text  x="55.73" y="79.5" ></text>
+</g>
+<g >
+<title>add (166,723,584 total_ops, 0.06%)</title><rect x="1066.7" y="117" width="0.7" height="15.0" fill="rgb(244,183,43)" rx="2" ry="2" />
+<text  x="1069.67" y="127.5" ></text>
+</g>
+<g >
+<title>add (143,130,624 total_ops, 0.05%)</title><rect x="589.3" y="53" width="0.6" height="15.0" fill="rgb(244,183,43)" rx="2" ry="2" />
+<text  x="592.30" y="63.5" ></text>
+</g>
+<g >
+<title>basis_convert (589,299,712 total_ops, 0.21%)</title><rect x="1049.0" y="101" width="2.4" height="15.0" fill="rgb(208,15,3)" rx="2" ry="2" />
+<text  x="1051.96" y="111.5" ></text>
+</g>
+<g >
+<title>mod_down (14,101,774,336 total_ops, 5.02%)</title><rect x="144.2" y="85" width="59.3" height="15.0" fill="rgb(240,162,38)" rx="2" ry="2" />
+<text  x="147.18" y="95.5" >mod_down</text>
+</g>
+<g >
+<title>intt (127,401,984 total_ops, 0.05%)</title><rect x="11.6" y="69" width="0.5" height="15.0" fill="rgb(225,96,23)" rx="2" ry="2" />
+<text  x="14.58" y="79.5" ></text>
+</g>
+<g >
+<title>intt (56,623,104 total_ops, 0.02%)</title><rect x="363.4" y="117" width="0.3" height="15.0" fill="rgb(225,96,23)" rx="2" ry="2" />
+<text  x="366.43" y="127.5" ></text>
+</g>
+<g >
+<title>intt (1,174,929,408 total_ops, 0.42%)</title><rect x="476.6" y="85" width="5.0" height="15.0" fill="rgb(225,96,23)" rx="2" ry="2" />
+<text  x="479.64" y="95.5" ></text>
+</g>
+<g >
+<title>add (317,718,528 total_ops, 0.11%)</title><rect x="460.6" y="85" width="1.4" height="15.0" fill="rgb(244,183,43)" rx="2" ry="2" />
+<text  x="463.64" y="95.5" ></text>
+</g>
+<g >
+<title>key_switch_hoisting (3,023,831,040 total_ops, 1.08%)</title><rect x="334.0" y="101" width="12.7" height="15.0" fill="rgb(246,191,45)" rx="2" ry="2" />
+<text  x="337.03" y="111.5" ></text>
+</g>
+<g >
+<title>ntt_common (481,296,384 total_ops, 0.17%)</title><rect x="525.2" y="85" width="2.0" height="15.0" fill="rgb(248,198,47)" rx="2" ry="2" />
+<text  x="528.18" y="95.5" ></text>
+</g>
+<g >
+<title>add (44,040,192 total_ops, 0.02%)</title><rect x="391.6" y="69" width="0.1" height="15.0" fill="rgb(244,183,43)" rx="2" ry="2" />
+<text  x="394.55" y="79.5" ></text>
+</g>
+<g >
+<title>mod_reduce_rescale (3,337,617,408 total_ops, 1.19%)</title><rect x="494.7" y="117" width="14.0" height="15.0" fill="rgb(238,153,36)" rx="2" ry="2" />
+<text  x="497.66" y="127.5" ></text>
+</g>
+<g >
+<title>mod_reduce_rescale (1,635,778,560 total_ops, 0.58%)</title><rect x="708.0" y="117" width="6.9" height="15.0" fill="rgb(238,153,36)" rx="2" ry="2" />
+<text  x="710.99" y="127.5" ></text>
+</g>
+<g >
+<title>mod_reduce_rescale (781,451,264 total_ops, 0.28%)</title><rect x="330.2" y="133" width="3.3" height="15.0" fill="rgb(238,153,36)" rx="2" ry="2" />
+<text  x="333.18" y="143.5" ></text>
+</g>
+<g >
+<title>add (421,527,552 total_ops, 0.15%)</title><rect x="917.1" y="85" width="1.7" height="15.0" fill="rgb(244,183,43)" rx="2" ry="2" />
+<text  x="920.07" y="95.5" ></text>
+</g>
+<g >
+<title>mult (37,748,736 total_ops, 0.01%)</title><rect x="13.8" y="69" width="0.2" height="15.0" fill="rgb(206,7,1)" rx="2" ry="2" />
+<text  x="16.83" y="79.5" ></text>
+</g>
+<g >
+<title>partial_multiply_inner (346,030,080 total_ops, 0.12%)</title><rect x="508.9" y="117" width="1.5" height="15.0" fill="rgb(221,75,17)" rx="2" ry="2" />
+<text  x="511.93" y="127.5" ></text>
+</g>
+<g >
+<title>key_switch_inner_product (943,718,400 total_ops, 0.34%)</title><rect x="1044.6" y="133" width="4.0" height="15.0" fill="rgb(240,163,39)" rx="2" ry="2" />
+<text  x="1047.62" y="143.5" ></text>
+</g>
+<g >
+<title>compute_tf (71,565,312 total_ops, 0.03%)</title><rect x="609.1" y="37" width="0.3" height="15.0" fill="rgb(249,206,49)" rx="2" ry="2" />
+<text  x="612.09" y="47.5" ></text>
+</g>
+<g >
+<title>ntt_common (1,082,916,864 total_ops, 0.39%)</title><rect x="403.7" y="69" width="4.5" height="15.0" fill="rgb(248,198,47)" rx="2" ry="2" />
+<text  x="406.65" y="79.5" ></text>
+</g>
+<g >
+<title>ntt_common (1,336,934,400 total_ops, 0.48%)</title><rect x="324.0" y="69" width="5.6" height="15.0" fill="rgb(248,198,47)" rx="2" ry="2" />
+<text  x="326.99" y="79.5" ></text>
+</g>
+<g >
+<title>ntt (1,210,318,848 total_ops, 0.43%)</title><rect x="33.4" y="85" width="5.1" height="15.0" fill="rgb(254,226,54)" rx="2" ry="2" />
+<text  x="36.42" y="95.5" ></text>
+</g>
+<g >
+<title>mult (56,623,104 total_ops, 0.02%)</title><rect x="715.5" y="101" width="0.2" height="15.0" fill="rgb(206,7,1)" rx="2" ry="2" />
+<text  x="718.46" y="111.5" ></text>
+</g>
+<g >
+<title>add (148,897,792 total_ops, 0.05%)</title><rect x="306.6" y="85" width="0.6" height="15.0" fill="rgb(244,183,43)" rx="2" ry="2" />
+<text  x="309.58" y="95.5" ></text>
+</g>
+<g >
+<title>intt (42,467,328 total_ops, 0.02%)</title><rect x="323.5" y="85" width="0.2" height="15.0" fill="rgb(225,96,23)" rx="2" ry="2" />
+<text  x="326.48" y="95.5" ></text>
+</g>
+<g >
+<title>add (121,634,816 total_ops, 0.04%)</title><rect x="390.3" y="69" width="0.5" height="15.0" fill="rgb(244,183,43)" rx="2" ry="2" />
+<text  x="393.27" y="79.5" ></text>
+</g>
+<g >
+<title>intt (1,995,964,416 total_ops, 0.71%)</title><rect x="551.4" y="53" width="8.4" height="15.0" fill="rgb(225,96,23)" rx="2" ry="2" />
+<text  x="554.40" y="63.5" ></text>
+</g>
+<g >
+<title>rotate (21,563,179,008 total_ops, 7.68%)</title><rect x="534.1" y="117" width="90.6" height="15.0" fill="rgb(232,125,30)" rx="2" ry="2" />
+<text  x="537.10" y="127.5" >rotate</text>
+</g>
+<g >
+<title>basis_convert (542,638,080 total_ops, 0.19%)</title><rect x="517.9" y="85" width="2.3" height="15.0" fill="rgb(208,15,3)" rx="2" ry="2" />
+<text  x="520.89" y="95.5" ></text>
+</g>
+<g >
+<title>ntt (7,049,576,448 total_ops, 2.51%)</title><rect x="250.4" y="69" width="29.6" height="15.0" fill="rgb(254,226,54)" rx="2" ry="2" />
+<text  x="253.38" y="79.5" >ntt</text>
+</g>
+<g >
+<title>compute_tf (78,643,200 total_ops, 0.03%)</title><rect x="1169.9" y="85" width="0.3" height="15.0" fill="rgb(249,206,49)" rx="2" ry="2" />
+<text  x="1172.86" y="95.5" ></text>
+</g>
+<g >
+<title>add (230,686,720 total_ops, 0.08%)</title><rect x="508.9" y="101" width="1.0" height="15.0" fill="rgb(244,183,43)" rx="2" ry="2" />
+<text  x="511.93" y="111.5" ></text>
+</g>
+<g >
+<title>rotate (1,531,052,032 total_ops, 0.55%)</title><rect x="10.1" y="133" width="6.4" height="15.0" fill="rgb(232,125,30)" rx="2" ry="2" />
+<text  x="13.08" y="143.5" ></text>
+</g>
+<g >
+<title>ntt (828,112,896 total_ops, 0.29%)</title><rect x="521.3" y="85" width="3.5" height="15.0" fill="rgb(254,226,54)" rx="2" ry="2" />
+<text  x="524.33" y="95.5" ></text>
+</g>
+<g >
+<title>ntt_common (1,123,024,896 total_ops, 0.40%)</title><rect x="1053.9" y="85" width="4.7" height="15.0" fill="rgb(248,198,47)" rx="2" ry="2" />
+<text  x="1056.85" y="95.5" ></text>
+</g>
+<g >
+<title>compute_phi (43,515,904 total_ops, 0.02%)</title><rect x="476.6" y="69" width="0.2" height="15.0" fill="rgb(234,135,32)" rx="2" ry="2" />
+<text  x="479.64" y="79.5" ></text>
+</g>
+<g >
+<title>mult (115,343,360 total_ops, 0.04%)</title><rect x="464.5" y="85" width="0.4" height="15.0" fill="rgb(206,7,1)" rx="2" ry="2" />
+<text  x="467.46" y="95.5" ></text>
+</g>
+<g >
+<title>compute_phi (229,638,144 total_ops, 0.08%)</title><rect x="768.3" y="69" width="1.0" height="15.0" fill="rgb(234,135,32)" rx="2" ry="2" />
+<text  x="771.35" y="79.5" ></text>
+</g>
+<g >
+<title>compute_phi (88,080,384 total_ops, 0.03%)</title><rect x="1083.0" y="69" width="0.3" height="15.0" fill="rgb(234,135,32)" rx="2" ry="2" />
+<text  x="1085.97" y="79.5" ></text>
+</g>
+<g >
+<title>add (2,437,152,768 total_ops, 0.87%)</title><rect x="16.5" y="101" width="10.3" height="15.0" fill="rgb(244,183,43)" rx="2" ry="2" />
+<text  x="19.51" y="111.5" ></text>
+</g>
+<g >
+<title>decompose (29,884,416 total_ops, 0.01%)</title><rect x="26.8" y="101" width="0.1" height="15.0" fill="rgb(218,62,14)" rx="2" ry="2" />
+<text  x="29.76" y="111.5" ></text>
+</g>
+<g >
+<title>ntt_common (1,403,781,120 total_ops, 0.50%)</title><rect x="602.6" y="37" width="5.9" height="15.0" fill="rgb(248,198,47)" rx="2" ry="2" />
+<text  x="605.59" y="47.5" ></text>
+</g>
+<g >
+<title>ntt (11,381,243,904 total_ops, 4.05%)</title><rect x="977.0" y="85" width="47.9" height="15.0" fill="rgb(254,226,54)" rx="2" ry="2" />
+<text  x="980.04" y="95.5" >ntt</text>
+</g>
+<g >
+<title>add (317,718,528 total_ops, 0.11%)</title><rect x="460.6" y="101" width="1.4" height="15.0" fill="rgb(244,183,43)" rx="2" ry="2" />
+<text  x="463.64" y="111.5" ></text>
+</g>
+<g >
+<title>ntt (1,811,939,328 total_ops, 0.65%)</title><rect x="363.7" y="117" width="7.6" height="15.0" fill="rgb(254,226,54)" rx="2" ry="2" />
+<text  x="366.67" y="127.5" ></text>
+</g>
+<g >
+<title>multiply_plain (239,075,328 total_ops, 0.09%)</title><rect x="693.7" y="101" width="1.0" height="15.0" fill="rgb(225,92,22)" rx="2" ry="2" />
+<text  x="696.74" y="111.5" ></text>
+</g>
+<g >
+<title>mult (476,577,792 total_ops, 0.17%)</title><rect x="462.0" y="85" width="2.0" height="15.0" fill="rgb(206,7,1)" rx="2" ry="2" />
+<text  x="464.98" y="95.5" ></text>
+</g>
+<g >
+<title>add (52,428,800 total_ops, 0.02%)</title><rect x="284.7" y="117" width="0.2" height="15.0" fill="rgb(244,183,43)" rx="2" ry="2" />
+<text  x="287.70" y="127.5" ></text>
+</g>
+<g >
+<title>key_switch_hoisting (13,224,640,512 total_ops, 4.71%)</title><rect x="1067.4" y="117" width="55.6" height="15.0" fill="rgb(246,191,45)" rx="2" ry="2" />
+<text  x="1070.37" y="127.5" >key_s..</text>
+</g>
+<g >
+<title>basis_convert (7,593,787,392 total_ops, 2.70%)</title><rect x="920.6" y="85" width="31.9" height="15.0" fill="rgb(208,15,3)" rx="2" ry="2" />
+<text  x="923.61" y="95.5" >ba..</text>
+</g>
+<g >
+<title>basis_convert (805,306,368 total_ops, 0.29%)</title><rect x="348.0" y="69" width="3.4" height="15.0" fill="rgb(208,15,3)" rx="2" ry="2" />
+<text  x="350.97" y="79.5" ></text>
+</g>
+<g >
+<title>intt (2,930,245,632 total_ops, 1.04%)</title><rect x="88.6" y="53" width="12.3" height="15.0" fill="rgb(225,96,23)" rx="2" ry="2" />
+<text  x="91.63" y="63.5" ></text>
+</g>
+<g >
+<title>intt (276,037,632 total_ops, 0.10%)</title><rect x="520.2" y="85" width="1.1" height="15.0" fill="rgb(225,96,23)" rx="2" ry="2" />
+<text  x="523.17" y="95.5" ></text>
+</g>
+<g >
+<title>key_switch_inner_product (794,296,320 total_ops, 0.28%)</title><rect x="460.6" y="117" width="3.4" height="15.0" fill="rgb(240,163,39)" rx="2" ry="2" />
+<text  x="463.64" y="127.5" ></text>
+</g>
+<g >
+<title>basis_convert (91,226,112 total_ops, 0.03%)</title><rect x="1025.9" y="117" width="0.4" height="15.0" fill="rgb(208,15,3)" rx="2" ry="2" />
+<text  x="1028.89" y="127.5" ></text>
+</g>
+<g >
+<title>ntt_common (2,847,670,272 total_ops, 1.01%)</title><rect x="496.7" y="85" width="12.0" height="15.0" fill="rgb(248,198,47)" rx="2" ry="2" />
+<text  x="499.72" y="95.5" ></text>
+</g>
+<g >
+<title>mult (44,040,192 total_ops, 0.02%)</title><rect x="1048.8" y="101" width="0.2" height="15.0" fill="rgb(206,7,1)" rx="2" ry="2" />
+<text  x="1051.77" y="111.5" ></text>
+</g>
+<g >
+<title>ntt_common (80,216,064 total_ops, 0.03%)</title><rect x="1026.3" y="101" width="0.3" height="15.0" fill="rgb(248,198,47)" rx="2" ry="2" />
+<text  x="1029.29" y="111.5" ></text>
+</g>
+<g >
+<title>compute_phi (78,118,912 total_ops, 0.03%)</title><rect x="170.5" y="37" width="0.3" height="15.0" fill="rgb(234,135,32)" rx="2" ry="2" />
+<text  x="173.49" y="47.5" ></text>
+</g>
+<g >
+<title>add (166,723,584 total_ops, 0.06%)</title><rect x="1127.9" y="85" width="0.7" height="15.0" fill="rgb(244,183,43)" rx="2" ry="2" />
+<text  x="1130.89" y="95.5" ></text>
+</g>
+<g >
+<title>ntt_common (93,585,408 total_ops, 0.03%)</title><rect x="495.6" y="85" width="0.4" height="15.0" fill="rgb(248,198,47)" rx="2" ry="2" />
+<text  x="498.63" y="95.5" ></text>
+</g>
+<g >
+<title>mod_reduce_rescale (4,816,109,568 total_ops, 1.72%)</title><rect x="1166.8" y="117" width="20.2" height="15.0" fill="rgb(238,153,36)" rx="2" ry="2" />
+<text  x="1169.80" y="127.5" ></text>
+</g>
+<g >
+<title>intt (84,934,656 total_ops, 0.03%)</title><rect x="1026.3" y="117" width="0.3" height="15.0" fill="rgb(225,96,23)" rx="2" ry="2" />
+<text  x="1029.27" y="127.5" ></text>
+</g>
+<g >
+<title>add (33,030,144 total_ops, 0.01%)</title><rect x="333.9" y="85" width="0.1" height="15.0" fill="rgb(244,183,43)" rx="2" ry="2" />
+<text  x="336.89" y="95.5" ></text>
+</g>
+<g >
+<title>ntt_common (6,657,933,312 total_ops, 2.37%)</title><rect x="252.0" y="53" width="28.0" height="15.0" fill="rgb(248,198,47)" rx="2" ry="2" />
+<text  x="255.02" y="63.5" >n..</text>
+</g>
+<g >
+<title>baby_step_basis (11,698,962,432 total_ops, 4.17%)</title><rect x="284.5" y="149" width="49.2" height="15.0" fill="rgb(219,68,16)" rx="2" ry="2" />
+<text  x="287.51" y="159.5" >baby..</text>
+</g>
+<g >
+<title>mult (553,648,128 total_ops, 0.20%)</title><rect x="371.3" y="117" width="2.3" height="15.0" fill="rgb(206,7,1)" rx="2" ry="2" />
+<text  x="374.28" y="127.5" ></text>
+</g>
+<g >
+<title>key_switch_inner_product (990,904,320 total_ops, 0.35%)</title><rect x="585.1" y="85" width="4.2" height="15.0" fill="rgb(240,163,39)" rx="2" ry="2" />
+<text  x="588.14" y="95.5" ></text>
+</g>
+<g >
+<title>intt (42,467,328 total_ops, 0.02%)</title><rect x="1063.3" y="117" width="0.2" height="15.0" fill="rgb(225,96,23)" rx="2" ry="2" />
+<text  x="1066.28" y="127.5" ></text>
+</g>
+<g >
+<title>key_switch_inner_product (398,458,880 total_ops, 0.14%)</title><rect x="693.1" y="117" width="1.6" height="15.0" fill="rgb(240,163,39)" rx="2" ry="2" />
+<text  x="696.07" y="127.5" ></text>
+</g>
+<g >
+<title>ntt (5,733,089,280 total_ops, 2.04%)</title><rect x="179.4" y="53" width="24.1" height="15.0" fill="rgb(254,226,54)" rx="2" ry="2" />
+<text  x="182.36" y="63.5" >ntt</text>
+</g>
+<g >
+<title>tree_up (24,338,759,680 total_ops, 8.67%)</title><rect x="408.6" y="149" width="102.3" height="15.0" fill="rgb(229,114,27)" rx="2" ry="2" />
+<text  x="411.57" y="159.5" >tree_up</text>
+</g>
+<g >
+<title>mod_down (7,300,186,112 total_ops, 2.60%)</title><rect x="464.0" y="117" width="30.7" height="15.0" fill="rgb(240,162,38)" rx="2" ry="2" />
+<text  x="466.98" y="127.5" >mo..</text>
+</g>
+<g >
+<title>mod_down_reduce (473,432,064 total_ops, 0.17%)</title><rect x="1025.9" y="133" width="2.0" height="15.0" fill="rgb(244,179,42)" rx="2" ry="2" />
+<text  x="1028.89" y="143.5" ></text>
+</g>
+<g >
+<title>compute_tf (88,080,384 total_ops, 0.03%)</title><rect x="651.6" y="53" width="0.4" height="15.0" fill="rgb(249,206,49)" rx="2" ry="2" />
+<text  x="654.59" y="63.5" ></text>
+</g>
+<g >
+<title>key_switch_hoisting (10,491,789,312 total_ops, 3.74%)</title><rect x="416.5" y="117" width="44.1" height="15.0" fill="rgb(246,191,45)" rx="2" ry="2" />
+<text  x="419.54" y="127.5" >key_..</text>
+</g>
+<g >
+<title>intt (99,090,432 total_ops, 0.04%)</title><rect x="495.6" y="101" width="0.4" height="15.0" fill="rgb(225,96,23)" rx="2" ry="2" />
+<text  x="498.60" y="111.5" ></text>
+</g>
+<g >
+<title>ntt_common (26,738,688 total_ops, 0.01%)</title><rect x="356.8" y="69" width="0.1" height="15.0" fill="rgb(248,198,47)" rx="2" ry="2" />
+<text  x="359.81" y="79.5" ></text>
+</g>
+<g >
+<title>add (2,563,768,320 total_ops, 0.91%)</title><rect x="715.9" y="117" width="10.8" height="15.0" fill="rgb(244,183,43)" rx="2" ry="2" />
+<text  x="718.93" y="127.5" ></text>
+</g>
+<g >
+<title>multiply (29,223,288,832 total_ops, 10.41%)</title><rect x="1066.7" y="133" width="122.8" height="15.0" fill="rgb(225,94,22)" rx="2" ry="2" />
+<text  x="1069.67" y="143.5" >multiply</text>
+</g>
+<g >
+<title>ntt (891,813,888 total_ops, 0.32%)</title><rect x="352.8" y="69" width="3.7" height="15.0" fill="rgb(254,226,54)" rx="2" ry="2" />
+<text  x="355.79" y="79.5" ></text>
+</g>
+<g >
+<title>key_switch_inner_product (304,087,040 total_ops, 0.11%)</title><rect x="390.3" y="101" width="1.3" height="15.0" fill="rgb(240,163,39)" rx="2" ry="2" />
+<text  x="393.27" y="111.5" ></text>
+</g>
+<g >
+<title>key_switch (21,563,179,008 total_ops, 7.68%)</title><rect x="534.1" y="101" width="90.6" height="15.0" fill="rgb(223,87,20)" rx="2" ry="2" />
+<text  x="537.10" y="111.5" >key_switch</text>
+</g>
+<g >
+<title>multiply_plain (223,346,688 total_ops, 0.08%)</title><rect x="307.2" y="85" width="0.9" height="15.0" fill="rgb(225,92,22)" rx="2" ry="2" />
+<text  x="310.21" y="95.5" ></text>
+</g>
+<g >
+<title>multiply_plain (566,231,040 total_ops, 0.20%)</title><rect x="1046.2" y="117" width="2.4" height="15.0" fill="rgb(225,92,22)" rx="2" ry="2" />
+<text  x="1049.21" y="127.5" ></text>
+</g>
+<g >
+<title>add (31,981,568 total_ops, 0.01%)</title><rect x="333.8" y="117" width="0.1" height="15.0" fill="rgb(244,183,43)" rx="2" ry="2" />
+<text  x="336.75" y="127.5" ></text>
+</g>
+<g >
+<title>ntt (1,911,029,760 total_ops, 0.68%)</title><rect x="1036.6" y="101" width="8.0" height="15.0" fill="rgb(254,226,54)" rx="2" ry="2" />
+<text  x="1039.59" y="111.5" ></text>
+</g>
+<g >
+<title>add (54,001,664 total_ops, 0.02%)</title><rect x="308.1" y="69" width="0.3" height="15.0" fill="rgb(244,183,43)" rx="2" ry="2" />
+<text  x="311.15" y="79.5" ></text>
+</g>
+<g >
+<title>compute_tf (210,763,776 total_ops, 0.08%)</title><rect x="978.8" y="69" width="0.9" height="15.0" fill="rgb(249,206,49)" rx="2" ry="2" />
+<text  x="981.81" y="79.5" ></text>
+</g>
+<g >
+<title>add (159,383,552 total_ops, 0.06%)</title><rect x="693.1" y="101" width="0.6" height="15.0" fill="rgb(244,183,43)" rx="2" ry="2" />
+<text  x="696.07" y="111.5" ></text>
+</g>
+<g >
+<title>intt (28,311,552 total_ops, 0.01%)</title><rect x="356.8" y="85" width="0.1" height="15.0" fill="rgb(225,96,23)" rx="2" ry="2" />
+<text  x="359.80" y="95.5" ></text>
+</g>
+<g >
+<title>mult (239,075,328 total_ops, 0.09%)</title><rect x="693.7" y="85" width="1.0" height="15.0" fill="rgb(206,7,1)" rx="2" ry="2" />
+<text  x="696.74" y="95.5" ></text>
+</g>
+<g >
+<title>intt (452,984,832 total_ops, 0.16%)</title><rect x="395.9" y="69" width="2.0" height="15.0" fill="rgb(225,96,23)" rx="2" ry="2" />
+<text  x="398.95" y="79.5" ></text>
+</g>
+<g >
+<title>mod_down_divide (424,673,280 total_ops, 0.15%)</title><rect x="144.2" y="69" width="1.8" height="15.0" fill="rgb(213,38,9)" rx="2" ry="2" />
+<text  x="147.18" y="79.5" ></text>
+</g>
+<g >
+<title>add (159,383,552 total_ops, 0.06%)</title><rect x="693.1" y="85" width="0.6" height="15.0" fill="rgb(244,183,43)" rx="2" ry="2" />
+<text  x="696.07" y="95.5" ></text>
+</g>
+<g >
+<title>add (35,127,296 total_ops, 0.01%)</title><rect x="284.5" y="133" width="0.2" height="15.0" fill="rgb(244,183,43)" rx="2" ry="2" />
+<text  x="287.51" y="143.5" ></text>
+</g>
+<g >
+<title>mod_down_reduce (16,846,422,016 total_ops, 6.00%)</title><rect x="209.2" y="85" width="70.8" height="15.0" fill="rgb(244,179,42)" rx="2" ry="2" />
+<text  x="212.20" y="95.5" >mod_down..</text>
+</g>
+<g >
+<title>compute_tf (89,260,032 total_ops, 0.03%)</title><rect x="441.1" y="69" width="0.4" height="15.0" fill="rgb(249,206,49)" rx="2" ry="2" />
+<text  x="444.13" y="79.5" ></text>
+</g>
+<g >
+<title>basis_convert (7,199,260,672 total_ops, 2.56%)</title><rect x="209.2" y="69" width="30.3" height="15.0" fill="rgb(208,15,3)" rx="2" ry="2" />
+<text  x="212.20" y="79.5" >ba..</text>
+</g>
+<g >
+<title>key_switch_hoisting (12,071,731,200 total_ops, 4.30%)</title><rect x="534.4" y="85" width="50.7" height="15.0" fill="rgb(246,191,45)" rx="2" ry="2" />
+<text  x="537.40" y="95.5" >key_s..</text>
+</g>
+<g >
+<title>ntt_common (2,453,274,624 total_ops, 0.87%)</title><rect x="240.1" y="53" width="10.3" height="15.0" fill="rgb(248,198,47)" rx="2" ry="2" />
+<text  x="243.07" y="63.5" ></text>
+</g>
+<g >
+<title>ntt (1,146,617,856 total_ops, 0.41%)</title><rect x="403.4" y="85" width="4.8" height="15.0" fill="rgb(254,226,54)" rx="2" ry="2" />
+<text  x="406.38" y="95.5" ></text>
+</g>
+<g >
+<title>basis_convert (794,296,320 total_ops, 0.28%)</title><rect x="1030.6" y="101" width="3.3" height="15.0" fill="rgb(208,15,3)" rx="2" ry="2" />
+<text  x="1033.57" y="111.5" ></text>
+</g>
+<g >
+<title>ntt (8,833,204,224 total_ops, 3.15%)</title><rect x="100.9" y="53" width="37.2" height="15.0" fill="rgb(254,226,54)" rx="2" ry="2" />
+<text  x="103.95" y="63.5" >ntt</text>
+</g>
+<g >
+<title>decompose (459,276,288 total_ops, 0.16%)</title><rect x="726.7" y="101" width="1.9" height="15.0" fill="rgb(218,62,14)" rx="2" ry="2" />
+<text  x="729.71" y="111.5" ></text>
+</g>
+<g >
+<title>intt (42,467,328 total_ops, 0.02%)</title><rect x="403.2" y="85" width="0.2" height="15.0" fill="rgb(225,96,23)" rx="2" ry="2" />
+<text  x="406.21" y="95.5" ></text>
+</g>
+<g >
+<title>basis_convert (3,535,798,272 total_ops, 1.26%)</title><rect x="1068.1" y="85" width="14.9" height="15.0" fill="rgb(208,15,3)" rx="2" ry="2" />
+<text  x="1071.11" y="95.5" ></text>
+</g>
+<g >
+<title>add (113,246,208 total_ops, 0.04%)</title><rect x="715.0" y="101" width="0.5" height="15.0" fill="rgb(244,183,43)" rx="2" ry="2" />
+<text  x="717.98" y="111.5" ></text>
+</g>
+<g >
+<title>add (580,911,104 total_ops, 0.21%)</title><rect x="138.1" y="53" width="2.4" height="15.0" fill="rgb(244,183,43)" rx="2" ry="2" />
+<text  x="141.08" y="63.5" ></text>
+</g>
+<g >
+<title>ntt_common (641,728,512 total_ops, 0.23%)</title><rect x="1060.3" y="101" width="2.7" height="15.0" fill="rgb(248,198,47)" rx="2" ry="2" />
+<text  x="1063.34" y="111.5" ></text>
+</g>
+<g >
+<title>basis_convert (1,151,336,448 total_ops, 0.41%)</title><rect x="26.9" y="85" width="4.8" height="15.0" fill="rgb(208,15,3)" rx="2" ry="2" />
+<text  x="29.88" y="95.5" ></text>
+</g>
+<g >
+<title>add (396,361,728 total_ops, 0.14%)</title><rect x="585.1" y="53" width="1.7" height="15.0" fill="rgb(244,183,43)" rx="2" ry="2" />
+<text  x="588.14" y="63.5" ></text>
+</g>
+<g >
+<title>add (50,331,648 total_ops, 0.02%)</title><rect x="1058.7" y="117" width="0.2" height="15.0" fill="rgb(244,183,43)" rx="2" ry="2" />
+<text  x="1061.67" y="127.5" ></text>
+</g>
+<g >
+<title>mult (182,452,224 total_ops, 0.06%)</title><rect x="390.8" y="69" width="0.8" height="15.0" fill="rgb(206,7,1)" rx="2" ry="2" />
+<text  x="393.79" y="79.5" ></text>
+</g>
+<g >
+<title>add (69,206,016 total_ops, 0.02%)</title><rect x="362.6" y="117" width="0.3" height="15.0" fill="rgb(244,183,43)" rx="2" ry="2" />
+<text  x="365.57" y="127.5" ></text>
+</g>
+<g >
+<title>ntt_common (40,108,032 total_ops, 0.01%)</title><rect x="403.2" y="69" width="0.2" height="15.0" fill="rgb(248,198,47)" rx="2" ry="2" />
+<text  x="406.22" y="79.5" ></text>
+</g>
+<g >
+<title>compute_phi (73,924,608 total_ops, 0.03%)</title><rect x="551.4" y="37" width="0.3" height="15.0" fill="rgb(234,135,32)" rx="2" ry="2" />
+<text  x="554.40" y="47.5" ></text>
+</g>
+<g >
+<title>basis_convert (3,452,698,624 total_ops, 1.23%)</title><rect x="628.6" y="69" width="14.5" height="15.0" fill="rgb(208,15,3)" rx="2" ry="2" />
+<text  x="631.63" y="79.5" ></text>
+</g>
+<g >
+<title>add (35,127,296 total_ops, 0.01%)</title><rect x="284.5" y="117" width="0.2" height="15.0" fill="rgb(244,183,43)" rx="2" ry="2" />
+<text  x="287.51" y="127.5" ></text>
+</g>
+<g >
+<title>all (280,739,577,856 total_ops, 100%)</title><rect x="10.0" y="213" width="1180.0" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="13.00" y="223.5" ></text>
+</g>
+<g >
+<title>basis_convert (2,028,994,560 total_ops, 0.72%)</title><rect x="285.4" y="69" width="8.5" height="15.0" fill="rgb(208,15,3)" rx="2" ry="2" />
+<text  x="288.38" y="79.5" ></text>
+</g>
+<g >
+<title>basis_convert (3,897,556,992 total_ops, 1.39%)</title><rect x="535.0" y="53" width="16.4" height="15.0" fill="rgb(208,15,3)" rx="2" ry="2" />
+<text  x="538.02" y="63.5" ></text>
+</g>
+<g >
+<title>mult (212,336,640 total_ops, 0.08%)</title><rect x="145.1" y="53" width="0.9" height="15.0" fill="rgb(206,7,1)" rx="2" ry="2" />
+<text  x="148.07" y="63.5" ></text>
+</g>
+<g >
+<title>mod_down_divide (843,055,104 total_ops, 0.30%)</title><rect x="917.1" y="101" width="3.5" height="15.0" fill="rgb(213,38,9)" rx="2" ry="2" />
+<text  x="920.07" y="111.5" ></text>
+</g>
+<g >
+<title>basis_convert (1,212,678,144 total_ops, 0.43%)</title><rect x="674.4" y="85" width="5.1" height="15.0" fill="rgb(208,15,3)" rx="2" ry="2" />
+<text  x="677.41" y="95.5" ></text>
+</g>
+<g >
+<title>add (33,030,144 total_ops, 0.01%)</title><rect x="333.9" y="101" width="0.1" height="15.0" fill="rgb(244,183,43)" rx="2" ry="2" />
+<text  x="336.89" y="111.5" ></text>
+</g>
+<g >
+<title>multiply (9,938,927,616 total_ops, 3.54%)</title><rect x="673.9" y="133" width="41.8" height="15.0" fill="rgb(225,94,22)" rx="2" ry="2" />
+<text  x="676.92" y="143.5" >mul..</text>
+</g>
+<g >
+<title>ntt_common (1,303,511,040 total_ops, 0.46%)</title><rect x="341.3" y="53" width="5.4" height="15.0" fill="rgb(248,198,47)" rx="2" ry="2" />
+<text  x="344.26" y="63.5" ></text>
+</g>
+<g >
+<title>ntt (1,189,085,184 total_ops, 0.42%)</title><rect x="1053.6" y="101" width="5.0" height="15.0" fill="rgb(254,226,54)" rx="2" ry="2" />
+<text  x="1056.58" y="111.5" ></text>
+</g>
+<g >
+<title>mult (83,361,792 total_ops, 0.03%)</title><rect x="1187.0" y="117" width="0.4" height="15.0" fill="rgb(206,7,1)" rx="2" ry="2" />
+<text  x="1190.04" y="127.5" ></text>
+</g>
+<g >
+<title>add (50,331,648 total_ops, 0.02%)</title><rect x="1058.7" y="133" width="0.2" height="15.0" fill="rgb(244,183,43)" rx="2" ry="2" />
+<text  x="1061.67" y="143.5" ></text>
+</g>
+<g >
+<title>ntt (1,189,085,184 total_ops, 0.42%)</title><rect x="397.9" y="69" width="4.9" height="15.0" fill="rgb(254,226,54)" rx="2" ry="2" />
+<text  x="400.85" y="79.5" ></text>
+</g>
+<g >
+<title>multiply (10,767,302,656 total_ops, 3.84%)</title><rect x="284.9" y="117" width="45.3" height="15.0" fill="rgb(225,94,22)" rx="2" ry="2" />
+<text  x="287.92" y="127.5" >mult..</text>
+</g>
+<g >
+<title>multiply_plain (871,366,656 total_ops, 0.31%)</title><rect x="140.5" y="69" width="3.7" height="15.0" fill="rgb(225,92,22)" rx="2" ry="2" />
+<text  x="143.52" y="79.5" ></text>
+</g>
+<g >
+<title>compute_tf (55,836,672 total_ops, 0.02%)</title><rect x="496.5" y="85" width="0.2" height="15.0" fill="rgb(249,206,49)" rx="2" ry="2" />
+<text  x="499.49" y="95.5" ></text>
+</g>
+<g >
+<title>add (56,623,104 total_ops, 0.02%)</title><rect x="673.9" y="117" width="0.3" height="15.0" fill="rgb(244,183,43)" rx="2" ry="2" />
+<text  x="676.92" y="127.5" ></text>
+</g>
+<g >
+<title>compute_phi (261,095,424 total_ops, 0.09%)</title><rect x="250.4" y="53" width="1.1" height="15.0" fill="rgb(234,135,32)" rx="2" ry="2" />
+<text  x="253.38" y="63.5" ></text>
+</g>
+<g >
+<title>ntt_common (1,738,014,720 total_ops, 0.62%)</title><rect x="1140.6" y="69" width="7.3" height="15.0" fill="rgb(248,198,47)" rx="2" ry="2" />
+<text  x="1143.58" y="79.5" ></text>
+</g>
+<g >
+<title>multiply (6,409,682,944 total_ops, 2.28%)</title><rect x="333.9" y="117" width="26.9" height="15.0" fill="rgb(225,94,22)" rx="2" ry="2" />
+<text  x="336.89" y="127.5" >m..</text>
+</g>
+<g >
+<title>giant_step_basis (6,457,655,296 total_ops, 2.30%)</title><rect x="333.7" y="149" width="27.1" height="15.0" fill="rgb(214,41,9)" rx="2" ry="2" />
+<text  x="336.69" y="159.5" >g..</text>
+</g>
+<g >
+<title>compute_tf (27,918,336 total_ops, 0.01%)</title><rect x="410.0" y="101" width="0.1" height="15.0" fill="rgb(249,206,49)" rx="2" ry="2" />
+<text  x="412.96" y="111.5" ></text>
+</g>
+<g >
+<title>ntt_common (240,648,192 total_ops, 0.09%)</title><rect x="1168.2" y="85" width="1.0" height="15.0" fill="rgb(248,198,47)" rx="2" ry="2" />
+<text  x="1171.18" y="95.5" ></text>
+</g>
+<g >
+<title>ntt (3,864,526,848 total_ops, 1.38%)</title><rect x="608.5" y="53" width="16.2" height="15.0" fill="rgb(254,226,54)" rx="2" ry="2" />
+<text  x="611.49" y="63.5" ></text>
+</g>
+<g >
+<title>basis_convert (1,141,899,264 total_ops, 0.41%)</title><rect x="334.2" y="69" width="4.8" height="15.0" fill="rgb(208,15,3)" rx="2" ry="2" />
+<text  x="337.17" y="79.5" ></text>
+</g>
+<g >
+<title>mult (704,643,072 total_ops, 0.25%)</title><rect x="1124.9" y="85" width="3.0" height="15.0" fill="rgb(206,7,1)" rx="2" ry="2" />
+<text  x="1127.93" y="95.5" ></text>
+</g>
+<g >
+<title>mod_raise (5,044,174,848 total_ops, 1.80%)</title><rect x="285.4" y="85" width="21.2" height="15.0" fill="rgb(246,188,45)" rx="2" ry="2" />
+<text  x="288.38" y="95.5" ></text>
+</g>
+<g >
+<title>ntt (276,037,632 total_ops, 0.10%)</title><rect x="1028.1" y="117" width="1.1" height="15.0" fill="rgb(254,226,54)" rx="2" ry="2" />
+<text  x="1031.05" y="127.5" ></text>
+</g>
+<g >
+<title>ntt (1,528,823,808 total_ops, 0.54%)</title><rect x="701.6" y="85" width="6.4" height="15.0" fill="rgb(254,226,54)" rx="2" ry="2" />
+<text  x="704.56" y="95.5" ></text>
+</g>
+<g >
+<title>mult (119,537,664 total_ops, 0.04%)</title><rect x="1189.5" y="117" width="0.5" height="15.0" fill="rgb(206,7,1)" rx="2" ry="2" />
+<text  x="1192.50" y="127.5" ></text>
+</g>
+<g >
+<title>rotate (35,964,321,792 total_ops, 12.81%)</title><rect x="52.3" y="117" width="151.2" height="15.0" fill="rgb(232,125,30)" rx="2" ry="2" />
+<text  x="55.29" y="127.5" >rotate</text>
+</g>
+<g >
+<title>rotate_digits (11,702,894,592 total_ops, 4.17%)</title><rect x="624.7" y="117" width="49.2" height="15.0" fill="rgb(208,15,3)" rx="2" ry="2" />
+<text  x="627.73" y="127.5" >rota..</text>
+</g>
+<g >
+<title>ntt_common (4,010,803,200 total_ops, 1.43%)</title><rect x="1170.2" y="85" width="16.8" height="15.0" fill="rgb(248,198,47)" rx="2" ry="2" />
+<text  x="1173.19" y="95.5" ></text>
+</g>
+<g >
+<title>ntt (1,443,889,152 total_ops, 0.51%)</title><rect x="708.8" y="101" width="6.1" height="15.0" fill="rgb(254,226,54)" rx="2" ry="2" />
+<text  x="711.79" y="111.5" ></text>
+</g>
+<g >
+<title>mod_down_reduce (8,142,716,928 total_ops, 2.90%)</title><rect x="590.5" y="69" width="34.2" height="15.0" fill="rgb(244,179,42)" rx="2" ry="2" />
+<text  x="593.51" y="79.5" >mo..</text>
+</g>
+<g >
+<title>key_switch_inner_product (9,563,013,120 total_ops, 3.41%)</title><rect x="876.9" y="117" width="40.2" height="15.0" fill="rgb(240,163,39)" rx="2" ry="2" />
+<text  x="879.87" y="127.5" >key..</text>
+</g>
+<g >
+<title>add (714,604,544 total_ops, 0.25%)</title><rect x="204.0" y="85" width="3.0" height="15.0" fill="rgb(244,183,43)" rx="2" ry="2" />
+<text  x="207.00" y="95.5" ></text>
+</g>
+<g >
+<title>intt (2,597,584,896 total_ops, 0.93%)</title><rect x="239.5" y="69" width="10.9" height="15.0" fill="rgb(225,96,23)" rx="2" ry="2" />
+<text  x="242.46" y="79.5" ></text>
+</g>
+<g >
+<title>compute_phi (31,981,568 total_ops, 0.01%)</title><rect x="356.9" y="69" width="0.2" height="15.0" fill="rgb(234,135,32)" rx="2" ry="2" />
+<text  x="359.92" y="79.5" ></text>
+</g>
+<g >
+<title>mod_reduce_rescale (842,268,672 total_ops, 0.30%)</title><rect x="38.5" y="117" width="3.5" height="15.0" fill="rgb(238,153,36)" rx="2" ry="2" />
+<text  x="41.50" y="127.5" ></text>
+</g>
+<g >
+<title>ntt (2,250,768,384 total_ops, 0.80%)</title><rect x="297.1" y="69" width="9.5" height="15.0" fill="rgb(254,226,54)" rx="2" ry="2" />
+<text  x="300.12" y="79.5" ></text>
+</g>
+<g >
+<title>ntt_common (1,711,276,032 total_ops, 0.61%)</title><rect x="364.1" y="101" width="7.2" height="15.0" fill="rgb(248,198,47)" rx="2" ry="2" />
+<text  x="367.09" y="111.5" ></text>
+</g>
+<g >
+<title>intt (127,401,984 total_ops, 0.05%)</title><rect x="1059.6" y="117" width="0.6" height="15.0" fill="rgb(225,96,23)" rx="2" ry="2" />
+<text  x="1062.65" y="127.5" ></text>
+</g>
+<g >
+<title>mult (28,311,552 total_ops, 0.01%)</title><rect x="714.9" y="117" width="0.1" height="15.0" fill="rgb(206,7,1)" rx="2" ry="2" />
+<text  x="717.86" y="127.5" ></text>
+</g>
+<g >
+<title>intt (637,009,920 total_ops, 0.23%)</title><rect x="1033.9" y="101" width="2.7" height="15.0" fill="rgb(225,96,23)" rx="2" ry="2" />
+<text  x="1036.91" y="111.5" ></text>
+</g>
+<g >
+<title>compute_tf (27,000,832 total_ops, 0.01%)</title><rect x="317.1" y="53" width="0.2" height="15.0" fill="rgb(249,206,49)" rx="2" ry="2" />
+<text  x="320.14" y="63.5" ></text>
+</g>
+<g >
+<title>rotate_sum (73,720,135,680 total_ops, 26.26%)</title><rect x="715.9" y="133" width="309.9" height="15.0" fill="rgb(215,49,11)" rx="2" ry="2" />
+<text  x="718.93" y="143.5" >rotate_sum</text>
+</g>
+<g >
+<title>decompose (45,613,056 total_ops, 0.02%)</title><rect x="374.1" y="85" width="0.2" height="15.0" fill="rgb(218,62,14)" rx="2" ry="2" />
+<text  x="377.07" y="95.5" ></text>
+</g>
+<g >
+<title>mod_reduce_rescale (317,718,528 total_ops, 0.11%)</title><rect x="1027.9" y="133" width="1.3" height="15.0" fill="rgb(238,153,36)" rx="2" ry="2" />
+<text  x="1030.88" y="143.5" ></text>
+</g>
+<g >
+<title>sigmoid_product (31,245,991,936 total_ops, 11.13%)</title><rect x="1058.7" y="149" width="131.3" height="15.0" fill="rgb(250,207,49)" rx="2" ry="2" />
+<text  x="1061.67" y="159.5" >sigmoid_product</text>
+</g>
+<g >
+<title>add (91,226,112 total_ops, 0.03%)</title><rect x="346.7" y="69" width="0.4" height="15.0" fill="rgb(244,183,43)" rx="2" ry="2" />
+<text  x="349.74" y="79.5" ></text>
+</g>
+<g >
+<title>mod_down_reduce (10,042,212,352 total_ops, 3.58%)</title><rect x="628.6" y="85" width="42.2" height="15.0" fill="rgb(244,179,42)" rx="2" ry="2" />
+<text  x="631.63" y="95.5" >mod..</text>
+</g>
+<g >
+<title>compute_tf (130,547,712 total_ops, 0.05%)</title><rect x="251.5" y="53" width="0.5" height="15.0" fill="rgb(249,206,49)" rx="2" ry="2" />
+<text  x="254.48" y="63.5" ></text>
+</g>
+<g >
+<title>add (845,152,256 total_ops, 0.30%)</title><rect x="203.5" y="101" width="3.5" height="15.0" fill="rgb(244,183,43)" rx="2" ry="2" />
+<text  x="206.45" y="111.5" ></text>
+</g>
+<g >
+<title>mod_raise (20,087,046,144 total_ops, 7.16%)</title><rect x="53.6" y="69" width="84.5" height="15.0" fill="rgb(246,188,45)" rx="2" ry="2" />
+<text  x="56.65" y="79.5" >mod_raise</text>
+</g>
+<g >
+<title>intt (6,200,229,888 total_ops, 2.21%)</title><rect x="768.3" y="85" width="26.1" height="15.0" fill="rgb(225,96,23)" rx="2" ry="2" />
+<text  x="771.35" y="95.5" >i..</text>
+</g>
+<g >
+<title>intt (2,378,170,368 total_ops, 0.85%)</title><rect x="1083.0" y="85" width="10.0" height="15.0" fill="rgb(225,96,23)" rx="2" ry="2" />
+<text  x="1085.97" y="95.5" ></text>
+</g>
+<g >
+<title>mod_down_reduce (13,677,101,056 total_ops, 4.87%)</title><rect x="146.0" y="69" width="57.5" height="15.0" fill="rgb(244,179,42)" rx="2" ry="2" />
+<text  x="148.97" y="79.5" >mod_do..</text>
+</g>
+<g >
+<title>mult (1,641,283,584 total_ops, 0.58%)</title><rect x="527.2" y="101" width="6.9" height="15.0" fill="rgb(206,7,1)" rx="2" ry="2" />
+<text  x="530.20" y="111.5" ></text>
+</g>
+<g >
+<title>key_switch_hoisting (1,667,235,840 total_ops, 0.59%)</title><rect x="517.8" y="117" width="7.0" height="15.0" fill="rgb(246,191,45)" rx="2" ry="2" />
+<text  x="520.80" y="127.5" ></text>
+</g>
+<g >
+<title>intt (1,613,758,464 total_ops, 0.57%)</title><rect x="433.6" y="85" width="6.8" height="15.0" fill="rgb(225,96,23)" rx="2" ry="2" />
+<text  x="436.60" y="95.5" ></text>
+</g>
+<g >
+<title>compute_phi (42,467,328 total_ops, 0.02%)</title><rect x="403.4" y="69" width="0.2" height="15.0" fill="rgb(234,135,32)" rx="2" ry="2" />
+<text  x="406.38" y="79.5" ></text>
+</g>
+<g >
+<title>compute_tf (27,525,120 total_ops, 0.01%)</title><rect x="602.5" y="37" width="0.1" height="15.0" fill="rgb(249,206,49)" rx="2" ry="2" />
+<text  x="605.47" y="47.5" ></text>
+</g>
+<g >
+<title>mult (566,231,040 total_ops, 0.20%)</title><rect x="1046.2" y="101" width="2.4" height="15.0" fill="rgb(206,7,1)" rx="2" ry="2" />
+<text  x="1049.21" y="111.5" ></text>
+</g>
+<g >
+<title>basis_convert (8,323,596,288 total_ops, 2.96%)</title><rect x="53.6" y="53" width="35.0" height="15.0" fill="rgb(208,15,3)" rx="2" ry="2" />
+<text  x="56.65" y="63.5" >ba..</text>
+</g>
+<g >
+<title>ntt (382,205,952 total_ops, 0.14%)</title><rect x="12.1" y="69" width="1.6" height="15.0" fill="rgb(254,226,54)" rx="2" ry="2" />
+<text  x="15.12" y="79.5" ></text>
+</g>
+<g >
+<title>multiply_plain (182,452,224 total_ops, 0.06%)</title><rect x="390.8" y="85" width="0.8" height="15.0" fill="rgb(225,92,22)" rx="2" ry="2" />
+<text  x="393.79" y="95.5" ></text>
+</g>
+<g >
+<title>multiply_plain (5,737,807,872 total_ops, 2.04%)</title><rect x="893.0" y="101" width="24.1" height="15.0" fill="rgb(225,92,22)" rx="2" ry="2" />
+<text  x="895.95" y="111.5" >m..</text>
+</g>
+<g >
+<title>ntt_common (588,251,136 total_ops, 0.21%)</title><rect x="699.1" y="69" width="2.5" height="15.0" fill="rgb(248,198,47)" rx="2" ry="2" />
+<text  x="702.09" y="79.5" ></text>
+</g>
+<g >
+<title>mod_down_divide (88,080,384 total_ops, 0.03%)</title><rect x="1048.6" y="117" width="0.4" height="15.0" fill="rgb(213,38,9)" rx="2" ry="2" />
+<text  x="1051.59" y="127.5" ></text>
+</g>
+<g >
+<title>ntt (3,114,270,720 total_ops, 1.11%)</title><rect x="481.6" y="85" width="13.1" height="15.0" fill="rgb(254,226,54)" rx="2" ry="2" />
+<text  x="484.57" y="95.5" ></text>
+</g>
+<g >
+<title>compute_phi (89,653,248 total_ops, 0.03%)</title><rect x="682.9" y="69" width="0.4" height="15.0" fill="rgb(234,135,32)" rx="2" ry="2" />
+<text  x="685.90" y="79.5" ></text>
+</g>
+<g >
+<title>key_switch_hoisting (3,389,521,920 total_ops, 1.21%)</title><rect x="1030.4" y="133" width="14.2" height="15.0" fill="rgb(246,191,45)" rx="2" ry="2" />
+<text  x="1033.37" y="143.5" ></text>
+</g>
+<g >
+<title>ntt_common (668,467,200 total_ops, 0.24%)</title><rect x="330.7" y="101" width="2.8" height="15.0" fill="rgb(248,198,47)" rx="2" ry="2" />
+<text  x="333.65" y="111.5" ></text>
+</g>
+<g >
+<title>multiply (22,442,934,272 total_ops, 7.99%)</title><rect x="416.1" y="133" width="94.3" height="15.0" fill="rgb(225,94,22)" rx="2" ry="2" />
+<text  x="419.06" y="143.5" >multiply</text>
+</g>
+<g >
+<title>r_square (8,318,091,264 total_ops, 2.96%)</title><rect x="373.6" y="149" width="35.0" height="15.0" fill="rgb(219,65,15)" rx="2" ry="2" />
+<text  x="376.61" y="159.5" >r_..</text>
+</g>
+</g>
+</svg>
