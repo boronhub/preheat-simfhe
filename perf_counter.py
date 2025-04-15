@@ -128,17 +128,17 @@ class ArchCounter:
             # + self.dram_plain_rd
         )
 
-    # @property
-    # def dram_total_rdwr_large(self):
-    #     return self.dram_ntt_rd + self.dram_auto_rd + self.dram_plain_rd
+    @property
+    def dram_total_rdwr_large(self):
+        return self.dram_ntt_rd + self.dram_auto_rd + self.dram_plain_rd
 
-    # @property
-    # def dram_total_small(self):
-    #     return self.dram_limb + self.dram_ntt + self.dram_auto + self.dram_plain
+    @property
+    def dram_total_small(self):
+        return self.dram_limb + self.dram_ntt + self.dram_auto + self.dram_plain
 
-    # @property
-    # def dram_total_large(self):
-    #     return self.dram_ntt + self.dram_auto + self.dram_plain
+    @property
+    def dram_total_large(self):
+        return self.dram_ntt + self.dram_auto + self.dram_plain
 
     @property
     def total_cycle_sm_bc(self):
@@ -172,7 +172,16 @@ class SWCounter:
 
     @property
     def total_ops(self):
+        print("SW Mult: ", self.mult)
         return self.mult + self.add
+    
+    @property
+    def total_mult(self):
+        return self.mult
+
+    @property
+    def total_add(self):
+        return self.add
 
 
 @dataclass

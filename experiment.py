@@ -12,6 +12,8 @@ import post_process
 RPT_ATTR = {
     "total ops": "sw.total_ops",
     "total mult": "sw.mult",
+    "total add": "sw.add",
+    "total ntt": "sw.ntt",
     "dram total": "arch.dram_total_rdwr_small",
     "dram limb rd": "arch.dram_limb_rd",
     "dram limb wr": "arch.dram_limb_wr",
@@ -55,7 +57,7 @@ def get_table(data, attr_dict, depth):
 
 
 def save_csv(headers, data, filepath):
-    headers = ["logN", "dnum", "fft_iters", "fresh_limbs", "op_count", "total_mem"]
+    #headers = ["logN", "dnum", "fft_iters", "fresh_limbs", "op_count", "total_mem"]
     with open(filepath, "w") as csvfile:
         csvwriter = csv.writer(csvfile, dialect="excel")
         csvwriter.writerow(headers)
@@ -216,7 +218,7 @@ def fft_best_params():
 
 
 if __name__ == "__main__":
-    scheme_params = params.BEST_PARAMS
+    """ scheme_params = params.BEST_PARAMS
     micro_args = [scheme_params.mod_raise_ctxt, scheme_params]
     targets = [
         Target("micro_benchmarks.mod_up", 3, micro_args),
@@ -224,13 +226,13 @@ if __name__ == "__main__":
         Target("micro_benchmarks.rotate", 4, micro_args),
     ]
     headers, data = run_mutiple(targets, gen_graph=True)
-    print_table(headers, data)
+    print_table(headers, data) """
 
-    # for scheme_params in [params.GPU_PARAMS, params.BEST_PARAMS]:
-    #     print(scheme_params)
-    #     aux_subroutine_benchmarks(scheme_params)
-    #     low_level_benchmark(scheme_params)
-    #     print()
+    for scheme_params in [params.GPU_PARAMS, params.BEST_PARAMS]:
+        print(scheme_params)
+        #aux_subroutine_benchmarks(scheme_params)
+        low_level_benchmark(scheme_params)
+        print()
 
     # for scheme_params in [params.BEST_PARAMS]:
     #     targets = [
@@ -296,9 +298,9 @@ if __name__ == "__main__":
         #    #    [scheme_params],
         #    #),
         #)
-    headers, data = run_mutiple(targets, gen_graph=True)
-    print_table(headers, data)
-    print()
+    # headers, data = run_mutiple(targets, gen_graph=True)
+    # print_table(headers, data)
+    # print()
 
     # for scheme_params in [params.BEST_PARAMS]:
     #     targets = [

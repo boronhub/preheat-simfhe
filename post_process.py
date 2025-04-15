@@ -47,7 +47,7 @@ def get_table(data, attr_list, depth):
         return out_str
 
     def gen_val(frame, stack, attr):
-        return operator.attrgetter(attr)(frame.stats) / 1e9
+        return operator.attrgetter(attr)(frame.stats)
 
     table = [walk_tree(data, gen_label, depth=depth)] + [
         walk_tree(data, gen_val, attr, depth=depth) for attr in attr_list
