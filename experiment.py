@@ -4,6 +4,7 @@ from typing import List, Dict
 import csv
 import tqdm
 import tabulate
+import copy
 
 import profiler
 import params
@@ -76,16 +77,20 @@ def run_single(target, attr_dict=RPT_ATTR):
     return (headers, data)
 
 
-def run_mutiple(targets, attr_dict=RPT_ATTR, gen_graph=False):
+def run_multiple(targets, attr_dict=RPT_ATTR, gen_graph=False, labels=None):
     cum_data = []
     headers = get_headers(attr_dict)
-    for target in targets:
+    if labels is not None:
+        headers.insert(0, 'label')
+    for label, target in zip(labels, targets):
         experiment = generate_profile(target)
         if gen_graph:
             for attr in attr_dict.values():
                 generate_flamegraph(experiment, attr)
         acc_data = post_process.accumulate(experiment.data)
         data = get_table(acc_data, attr_dict, target.depth)
+        if labels is not None:
+            data[0].insert(0, label)
         cum_data += data
     return (headers, cum_data)
 
@@ -217,165 +222,51 @@ def fft_best_params():
     save_csv(headers, table, "data/fft.csv")
 
 
-if __name__ == "__main__":
-    """ scheme_params = params.BEST_PARAMS
-    micro_args = [scheme_params.mod_raise_ctxt, scheme_params]
-    targets = [
-        Target("micro_benchmarks.mod_up", 3, micro_args),
-        Target("micro_benchmarks.mod_down", 3, micro_args),
-        Target("micro_benchmarks.rotate", 4, micro_args),
-    ]
-    headers, data = run_mutiple(targets, gen_graph=True)
-    print_table(headers, data) """
+def sweep_params_for_preheat():
+    attributes = {
+        "total ops": "sw.total_ops",
+        "total mult": "sw.mult",
+        "dram total": "arch.dram_total_rdwr_small",
+        "dram limb rd": "arch.dram_limb_rd",
+        "dram limb wr": "arch.dram_limb_wr",
+        "dram key rd": "arch.dram_auto_rd",
+        "total cycles (slow, worst case)": "arch.total_cycle_sm_wc",
+        "total cycles (slow, best case)": "arch.total_cycle_sm_bc",
+        # "total cycles (fast, worst case)": "arch.total_cycle_fm_wc",
+        # "total cycles (fast, best case)": "arch.total_cycle_fm_bc",
+    }
 
-    for scheme_params in [params.GPU_PARAMS, params.BEST_PARAMS]:
-        print(scheme_params)
-        #aux_subroutine_benchmarks(scheme_params)
-        low_level_benchmark(scheme_params)
-        print()
+    base_arch_params = params.ArchParam(
+        karatsuba=True,
+        key_compression=True,
+        rescale_fusion=True,
+        cache_style=params.CacheStyle.ALPHA,
+        mod_down_reorder=True,
+    )
 
-    # for scheme_params in [params.BEST_PARAMS]:
-    #     targets = [
-    #         Target(
-    #             "poly_eval.poly_eval",
-    #             1,
-    #             [scheme_params.mod_raise_ctxt, scheme_params.arch_param, 63, 2],
-    #         )
-    #     ]
-    #     headers, data = run_mutiple(targets)
-    #     print_table(headers, data)
-    #     print()
+    arch_params = []
+    labels = []
+    for funits in range(2, 32):
+        arch_param = copy.copy(base_arch_params)
+        arch_param.funits = funits
+        arch_params.append(arch_param)
+        labels.append(f"funits={funits}")
 
     targets = []
-    # for scheme_params in [params.GPU_PARAMS, params.LATTIGO_PARAMS, params.BEST_PARAMS]:
-    # for scheme_params in [params.LATTIGO_PARAMS]:
-    # for scheme_params in [params.BEST_PARAMS, params.HUGE_PARAMS]:
-    for scheme_params in [
-        params.GPU_PARAMS,
-        params.Mem_benchmark_O_1_cache,
-        params.Mem_benchmark_beta_cache,
-        params.Mem_benchmark_alpha_cache,
-        params.Mem_benchmark_reorder,
-    ]:
-        # for scheme_params in [
-        #    params.Alg_benchmark_baseline,
-        #    params.Alg_benchmark_mod_down_merge,
-        #    params.Alg_benchmark_mod_down_hoist,
-        #    params.BEST_PARAMS,
-        # ]:
-        # for scheme_params in [params.BEST_PARAMS]:
-        print(scheme_params)
-        #targets.append(
-        #    # Target(
-        #    #    "logistic_regression.inner_product",
-        #    #    1,
-        #    #    [scheme_params.fresh_ctxt, scheme_params.arch_param, 256],
-        #    # )
-        #    # ,
-        #    # Target(
-        #    #     "logistic_regression.sigmoid_product",
-        #    #     1,
-        #    #     [scheme_params.fresh_ctxt, scheme_params.arch_param],
-        #    # ),
-        #    # Target(
-        #    #     "logistic_regression.iteration",
-        #    #     1,
-        #    #     [scheme_params.fresh_ctxt, scheme_params.arch_param, 256],
-        #    # ),
-        #    # Target(
-        #    #     "bootstrap.bootstrap",
-        #    #     1,
-        #    #     [scheme_params],
-        #    # ),
-        #    # Target(
-        #    #     "logistic_regression.logistic_regression",
-        #    #     2,
-        #    #     [scheme_params.fresh_ctxt, scheme_params.arch_param],
-        #    # ),
-        #    #Target(
-        #    #    "logistic_regression.bootstrap_regression",
-        #    #    1,
-        #    #    [scheme_params],
-        #    #),
-        #)
-    # headers, data = run_mutiple(targets, gen_graph=True)
-    # print_table(headers, data)
-    # print()
+    for arch_param in arch_params:
+        scheme_params = params.SchemeParams(
+            logq=50,
+            logN=17,
+            dnum=2,
+            fft_iters=6,
+            fft_style=params.FFTStyle.UNROLLED_HOISTED,
+            arch_param=arch_param,
+        )
+        targets.append(Target("bootstrap.bootstrap", 1, [scheme_params]))
 
-    # for scheme_params in [params.BEST_PARAMS]:
-    #     targets = [
-    #         Target(
-    #             "fft.fft_inner_hoisted_unrolled",
-    #             1,
-    #             [scheme_params.mod_raise_ctxt, scheme_params.arch_param, 7],
-    #         ),
-    #         Target(
-    #             "fft.fft_inner_bsgs_hoisted",
-    #             1,
-    #             [scheme_params.mod_raise_ctxt, scheme_params.arch_param, 7, 1],
-    #         ),
-    #         Target(
-    #             "fft.fft_inner_hoisted_unrolled",
-    #             1,
-    #             [scheme_params.mod_raise_ctxt, scheme_params.arch_param, 63],
-    #         ),
-    #         Target(
-    #             "fft.fft_inner_bsgs",
-    #             1,
-    #             [scheme_params.mod_raise_ctxt, scheme_params.arch_param, 63],
-    #         ),
-    #         Target(
-    #             "fft.fft_inner_bsgs_hoisted",
-    #             1,
-    #             [scheme_params.mod_raise_ctxt, scheme_params.arch_param, 63, 1],
-    #         ),
-    #         Target(
-    #             "fft.fft_inner_bsgs_hoisted",
-    #             1,
-    #             [scheme_params.mod_raise_ctxt, scheme_params.arch_param, 63, 2],
-    #         ),
-    #         Target(
-    #             "fft.fft_inner_bsgs_hoisted",
-    #             1,
-    #             [scheme_params.mod_raise_ctxt, scheme_params.arch_param, 63, 4],
-    #         ),
-    #         Target(
-    #             "fft.fft_inner_bsgs_hoisted",
-    #             1,
-    #             [scheme_params.mod_raise_ctxt, scheme_params.arch_param, 63],
-    #         ),
-    #     ]
-    #     headers, data = run_mutiple(targets)
-    #     print_table(headers, data)
+    headers, data = run_multiple(targets, attr_dict=attributes, gen_graph=False, labels=labels)
+    print_table(headers, data)
 
-    # scheme_params_list = params.get_params()
-    # scheme_params_list = params.get_mem_params()
-    # scheme_params_list = params.get_alg_params()
-    # for scheme_params in scheme_params_list:
-    # i=0
-    # for scheme_params in [params.GPU_PARAMS,params.GPU_PARAMS, params.BEST_PARAMS]:
-    #     if i == 1:
-    #         scheme_params.arch_param.rescale_fusion=True
 
-    #     print(scheme_params)
-    #     print(scheme_params.arch_param)
-    #     low_level_benchmark(scheme_params)
-    #     # high_level_benchmark(scheme_params)
-    #     # bootstrap_benchmark(scheme_params, rpt_depth=1)
-    #     print()
-    #     i += 1
-
-    # headers, data = compare_bootstrap(scheme_params_list)
-    # print_table(headers, data)
-
-    # run_benchmark(cts_fft)
-    # for lvl_squashed in range(1, 6):
-    #     fft_iter = Target(
-    #         "bootstrap.fft_inner_hoisted_unrolled",
-    #         [scheme_params.mod_raise_ctxt, lvl_squashed],
-    #     )
-    #     print(f"lvl squashed: {lvl_squashed}")
-    #     run_benchmark(fft_iter, rpt_depth=1)
-    #     print()
-
-    # fft_best_params()
+if __name__ == "__main__":
+    sweep_params_for_preheat()
