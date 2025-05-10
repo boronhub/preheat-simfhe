@@ -2,6 +2,7 @@ from math import ceil, exp, log
 from dataclasses import dataclass, field
 from typing import List, Dict
 import csv
+import sys
 import tqdm
 import tabulate
 import copy
@@ -34,10 +35,14 @@ class Target:
     kwargs: List = field(default_factory=dict)
 
 
+global_profiler = None
+
 def generate_profile(target: Target):
-    experiment = profiler.Profiler(target.name)
-    experiment.profile(target.name, *target.args, **target.kwargs)
-    return experiment
+    global global_profiler
+    if global_profiler is None:
+        global_profiler = profiler.Profiler(target.name)
+    global_profiler.profile(target.name, *target.args, **target.kwargs)
+    return global_profiler
 
 
 def generate_flamegraph(experiment: profiler.Profiler, attr, suffix=""):
@@ -77,20 +82,16 @@ def run_single(target, attr_dict=RPT_ATTR):
     return (headers, data)
 
 
-def run_multiple(targets, attr_dict=RPT_ATTR, gen_graph=False, labels=None):
+def run_multiple(targets, attr_dict=RPT_ATTR, gen_graph=False):
     cum_data = []
     headers = get_headers(attr_dict)
-    if labels is not None:
-        headers.insert(0, 'label')
-    for label, target in zip(labels, targets):
+    for target in tqdm.tqdm(targets):
         experiment = generate_profile(target)
         if gen_graph:
             for attr in attr_dict.values():
                 generate_flamegraph(experiment, attr)
         acc_data = post_process.accumulate(experiment.data)
         data = get_table(acc_data, attr_dict, target.depth)
-        if labels is not None:
-            data[0].insert(0, label)
         cum_data += data
     return (headers, cum_data)
 
@@ -107,10 +108,15 @@ def compare_bootstrap(schemes, attr_dict=RPT_ATTR):
     return (headers, cum_data)
 
 
-def print_table(headers, data):
-    tabulate.PRESERVE_WHITESPACE = True
-    print(tabulate.tabulate(data, headers=headers))
-    tabulate.PRESERVE_WHITESPACE = False
+def print_table(headers, data, print_csv=False):
+    if print_csv:
+        writer = csv.writer(sys.stdout)
+        writer.writerow(headers)
+        writer.writerows(data)
+    else:
+        tabulate.PRESERVE_WHITESPACE = True
+        print(tabulate.tabulate(data, headers=headers))
+        tabulate.PRESERVE_WHITESPACE = False
 
 
 def aux_subroutine_benchmarks(scheme_params: params.SchemeParams):
@@ -244,28 +250,49 @@ def sweep_params_for_preheat():
         mod_down_reorder=True,
     )
 
-    arch_params = []
-    labels = []
-    for funits in range(2, 32):
-        arch_param = copy.copy(base_arch_params)
-        arch_param.funits = funits
-        arch_params.append(arch_param)
-        labels.append(f"funits={funits}")
+    scheme_params = []
+    extra_columns = []
+    extra_column_names = [
+        "funits",
+        "logq",
+        "dnum",
+        "cache_size",
+    ]
+    for logq in range(45, 51):
+        for dnum in range(2, 7):
+            for funits in range(10, 16):
+                arch_param = copy.copy(base_arch_params)
+                arch_param.funits = funits
+                scheme_param = params.SchemeParams(
+                    logq=logq,
+                    logN=17,
+                    dnum=dnum,
+                    fft_iters=6,
+                    fft_style=params.FFTStyle.UNROLLED_HOISTED,
+                    arch_param=arch_param,
+                )
+                cache_size = scheme_param.get_max_cache_size()
+                extra_columns.append(
+                    [
+                        funits,
+                        logq,
+                        dnum,
+                        cache_size,
+                    ]
+                )
+                scheme_params.append(scheme_param)
 
     targets = []
-    for arch_param in arch_params:
-        scheme_params = params.SchemeParams(
-            logq=50,
-            logN=17,
-            dnum=2,
-            fft_iters=6,
-            fft_style=params.FFTStyle.UNROLLED_HOISTED,
-            arch_param=arch_param,
-        )
-        targets.append(Target("bootstrap.bootstrap", 1, [scheme_params]))
+    for scheme_param in scheme_params:
+        targets.append(Target("bootstrap.bootstrap", 1, [scheme_param]))
 
-    headers, data = run_multiple(targets, attr_dict=attributes, gen_graph=False, labels=labels)
-    print_table(headers, data)
+    headers, data = run_multiple(targets, attr_dict=attributes, gen_graph=False)
+
+    for i in range(len(data)):
+        data[i] += extra_columns[i]
+    headers += extra_column_names
+
+    print_table(headers, data, print_csv=True)
 
 
 if __name__ == "__main__":

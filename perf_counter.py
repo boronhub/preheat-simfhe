@@ -172,7 +172,6 @@ class SWCounter:
 
     @property
     def total_ops(self):
-        print("SW Mult: ", self.mult)
         return self.mult + self.add
     
     @property
