@@ -2,8 +2,8 @@ import pandas as pd
 df = pd.read_csv('data.csv')
 
 import numpy as np
-X = df['funits'].values.reshape(-1, 1)
-y = df['total cycles (slow best case)'].values
+X = df[['funits', 'logq', 'dnum', 'cache_size']].values
+y = df["total cycles (slow, best case)"].values
 
 from pysr import PySRRegressor
 model = PySRRegressor(
